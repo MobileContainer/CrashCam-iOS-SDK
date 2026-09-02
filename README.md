@@ -27,7 +27,7 @@ https://github.com/MobileContainer/CrashCam-iOS-SDK
 or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "1.0.2")
+.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "1.0.3")
 ```
 
 The library product is `CrashCam-iOS`; the module you import is `CrashCam`.
@@ -136,8 +136,13 @@ card on the dashboard.
 - `CrashCam.shared.replayLastSession()` replays the previous crashed session's
   touches in-process.
 - Launch arguments: `-CrashCamReplayOnLaunch` replays the app's own last
-  recording ~2s after launch; `-CrashCamReplayFile <absolute path>` replays a
-  chosen recording (Simulator: host paths work directly).
+  recording; `-CrashCamReplayFile <absolute path>` replays a chosen recording
+  (Simulator: host paths work directly).
+- Replays keep the recorded timing from launch: every recording made with
+  1.0.3 or later starts with a session-start marker, and the first touch is
+  fired the same time after launch as the user's was (or at once if a manual
+  replay starts later than that). Recordings without the marker start ~2s
+  after launch.
 - A pointer overlay shows every replayed touch: an orange disc that scales in
   on touch-down, follows drags with a fading trail and ripples out on lift,
   drawn in a pass-through window above the app. Set

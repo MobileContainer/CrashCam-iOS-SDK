@@ -44,6 +44,14 @@ public final class CrashCam {
 
     private static let lastCrashInfoKey = "lastCrashInfo"
 
+    #if DEBUG
+    /// When this process started its recording session (media time), taken
+    /// right where the session-start row is written. The replayer aligns a
+    /// recording's session-start row to it, so the first replayed touch comes
+    /// the same time after launch as the recorded one did.
+    private var launchMediaTime: CFTimeInterval?
+    #endif
+
     private init() {}
 
     /// Call once from `application(_:didFinishLaunchingWithOptions:)`. Pass
@@ -81,6 +89,9 @@ public final class CrashCam {
         }
 
         // Begin recording the new session from a clean event log.
+        #if DEBUG
+        launchMediaTime = CACurrentMediaTime()
+        #endif
         CrashCamLogger.shared.startNewSession()
 
         // Start recording text-field/-view edits (length only) into the same
@@ -129,17 +140,49 @@ public final class CrashCam {
 
         guard chosenFile != nil || arguments.contains("-CrashCamReplayOnLaunch") else { return }
 
-        // The delay lets the UI reach its settled post-launch state (the
-        // recording's own t0 is its first touch, so the replay timeline is
-        // unaffected by when it starts).
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            if let chosenFile {
-                self.replay(fileURL: chosenFile)
+            let fileURL = chosenFile ?? CrashCamLogger.shared.replayFileURL
+            guard let recording = self.loadRecording(from: fileURL) else { return }
+
+            if recording.contains(where: { $0.kind == .sessionStart }) {
+                // The recording knows how long after launch its first touch
+                // came, and the replayer reproduces that delay itself — so
+                // hand it over as soon as there is a window to replay into.
+                guard await self.waitForWindow() else {
+                    print("CrashCam replay: no window appeared after launch — not replaying")
+                    return
+                }
             } else {
-                self.replayLastSession()
+                // Legacy recording without a session-start row: nothing to
+                // align to, so give the UI ~2s to settle as before (its t0 is
+                // the first touch, so the replay itself is unaffected).
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
+            self.replay(recording, speed: 1.0, completion: nil)
         }
+    }
+
+    /// Polls (50ms) until the app has a window, giving up after `timeout`.
+    /// Bootstrap runs before any scene connects, so a replay scheduled from
+    /// launch has to wait for the window the scene delegate creates.
+    private func waitForWindow(timeout: TimeInterval = 10) async -> Bool {
+        let deadline = CACurrentMediaTime() + timeout
+        while Self.replayWindow() == nil {
+            guard CACurrentMediaTime() < deadline else { return false }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return true
+    }
+
+    /// The window to replay into: the key window, else any. The replay
+    /// pointer overlay is a window too (still fading out if a replay just
+    /// ended) — never that one.
+    private static func replayWindow() -> UIWindow? {
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .filter { !($0 is ReplayPointerWindow) }
+        return windows.first(where: \.isKeyWindow) ?? windows.first
     }
 
     /// Value following `flag` in the argument list, or nil when the flag is
@@ -176,18 +219,27 @@ public final class CrashCam {
     ///
     /// The starting UI state still has to match the recording's: replay the
     /// same app version, from a fresh launch, as every recording begins at
-    /// launch. Returns false when the file cannot be read or decoded, when it
-    /// holds no events, or when there is no window to replay into.
+    /// launch. When the recording carries a session-start row, its first
+    /// touch is fired at the same delay after launch as it was recorded (or
+    /// at once if that moment has already passed); older recordings start
+    /// immediately. Returns false when the file cannot be read or decoded,
+    /// when it holds no events, or when there is no window to replay into.
     @discardableResult
     public func replay(fileURL: URL,
                        speed: Double = 1.0,
                        completion: (() -> Void)? = nil) -> Bool {
+        guard let recording = loadRecording(from: fileURL) else { return false }
+        return replay(recording, speed: speed, completion: completion)
+    }
+
+    /// Decodes a recording file, logging why when it cannot be used.
+    private func loadRecording(from fileURL: URL) -> [UserTapInfo]? {
         let data: Data
         do {
             data = try Data(contentsOf: fileURL)
         } catch {
             print("CrashCam replay: cannot read \(fileURL.path): \(error.localizedDescription)")
-            return false
+            return nil
         }
 
         let recording: [UserTapInfo]
@@ -195,34 +247,39 @@ public final class CrashCam {
             recording = try JSONDecoder().decode([UserTapInfo].self, from: data)
         } catch {
             print("CrashCam replay: \(fileURL.lastPathComponent) is not a [UserTapInfo] array: \(error)")
-            return false
+            return nil
         }
 
         guard !recording.isEmpty else {
             print("CrashCam replay: \(fileURL.lastPathComponent) contains no events")
-            return false
+            return nil
         }
         print("CrashCam replay: loaded \(recording.count) event(s) from \(fileURL.path)")
+        return recording
+    }
 
-        // The replay pointer overlay is a window too (still fading out if a
-        // replay just ended) — never replay into it.
-        let windows = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .filter { !($0 is ReplayPointerWindow) }
-        guard let window = windows.first(where: \.isKeyWindow) ?? windows.first else {
+    @discardableResult
+    private func replay(_ recording: [UserTapInfo],
+                        speed: Double,
+                        completion: (() -> Void)?) -> Bool {
+        guard let window = Self.replayWindow() else {
             print("CrashCam replay: no window to replay into")
             return false
         }
 
         // Truncate the live event log before injecting. If the replay
-        // reproduces the crash, the next launch then sees an empty log,
-        // exportForReplay() returns false, and the original recording in
-        // crash_cam.txt survives for another replay — instead of being
-        // overwritten by the handful of taps that started this one.
+        // reproduces the crash, the next launch then sees a log holding only
+        // the session-start row, exportForReplay() returns false, and the
+        // original recording in crash_cam.txt survives for another replay —
+        // instead of being overwritten by the handful of taps that started
+        // this one.
         CrashCamLogger.shared.startNewSession()
 
-        TouchReplayer.shared.replay(recording, in: window, speed: speed, completion: completion)
+        TouchReplayer.shared.replay(recording,
+                                    in: window,
+                                    speed: speed,
+                                    launchReference: launchMediaTime,
+                                    completion: completion)
         return true
     }
     #endif

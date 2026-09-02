@@ -18,6 +18,10 @@ public struct UserTapInfo: Codable {
         case touch = 0
         case textChange = 1
         case keyboardHide = 2
+        /// The recording session started — written first in every session, at
+        /// app launch. Its timestamp is what lets a replay fire the first touch
+        /// at the same delay after launch as it was recorded.
+        case sessionStart = 3
     }
 
     public enum Phase: Int, Codable {
@@ -70,6 +74,19 @@ public struct UserTapInfo: Codable {
         self.location = .zero
         self.timestamp = timestamp
         self.phase = .began // unused for keyboard events; kept for the array contract
+        self.textLength = nil
+    }
+
+    /// The recording session started (the app launched, or an in-process
+    /// replay reset the log). Carries only a timestamp. `phase` is `.ended`
+    /// on purpose: the legacy Appium `replay.js` groups rows by phase alone
+    /// and drops an `ended` with no open stroke, so this row is invisible to
+    /// it instead of becoming a tap at the origin.
+    public init(sessionStartAt timestamp: Date) {
+        self.kind = .sessionStart
+        self.location = .zero
+        self.timestamp = timestamp
+        self.phase = .ended
         self.textLength = nil
     }
 

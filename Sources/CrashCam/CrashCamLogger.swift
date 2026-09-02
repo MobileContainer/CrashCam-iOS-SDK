@@ -49,7 +49,12 @@ public final class CrashCamLogger {
     // survives the crash.
     public func add(_ info: UserTapInfo) {
         guard !isPaused else { return }
+        append(info)
+    }
 
+    /// The write itself, unconditional — the session-start marker must land
+    /// even while recording is paused (a replay resetting the log).
+    private func append(_ info: UserTapInfo) {
         // Synchronous append on the calling (main/touch) thread. The event must
         // be on disk before a potential crash on the very next instruction; a
         // background/async flush could lose the last — often crash-causing —
@@ -81,18 +86,24 @@ public final class CrashCamLogger {
     // MARK: - Session lifecycle
 
     /// Call once at launch, *after* exporting any pending-crash data. Truncates
-    /// the rolling event log so the new session is recorded from a clean slate.
+    /// the rolling event log so the new session is recorded from a clean slate,
+    /// then writes the session-start marker as its first row: a replay of this
+    /// session can then fire its first touch at the same delay after launch
+    /// as the user did.
     public func startNewSession() {
         queue.sync {
             try? handle?.close()
             handle = nil
             try? Data().write(to: eventsFileURL, options: .atomic)
         }
+        append(UserTapInfo(sessionStartAt: Date()))
     }
 
     /// Reads the durable event log written by the crashed session and writes
-    /// the JSON array the Appium replay expects. Returns true if any events
-    /// were exported.
+    /// the JSON array the Appium replay expects. Returns true if the session
+    /// recorded any input; a log holding nothing but the session-start marker
+    /// (a crash reproduced by an in-process replay, which pauses recording)
+    /// leaves the previous `crash_cam.txt` intact and returns false.
     @discardableResult
     public func exportForReplay() -> Bool {
         // The crashed process's writes went through write(2) into the kernel
@@ -112,8 +123,11 @@ public final class CrashCamLogger {
             }
         }
 
-        guard !events.isEmpty,
-              let arrayData = try? encoder.encode(events),
+        guard events.contains(where: { $0.kind != .sessionStart }) else {
+            print("CrashCam: the crashed session recorded no input — keeping the previous replay file")
+            return false
+        }
+        guard let arrayData = try? encoder.encode(events),
               let arrayText = String(data: arrayData, encoding: .utf8)
         else { return false }
 

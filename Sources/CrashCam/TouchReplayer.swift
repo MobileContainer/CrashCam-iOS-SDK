@@ -57,20 +57,35 @@ public final class TouchReplayer {
     private var activeTouch: UITouch?
     private var lastPoint: CGPoint = .zero
     private var maxLateness: TimeInterval = 0
+    // Launch alignment: when the recording has a session-start row and the
+    // caller says when *this* process launched, event offsets are measured
+    // from the session start and the timeline origin is pinned to the launch,
+    // so the first touch fires the same time after launch as it was recorded.
+    private var launchReference: CFTimeInterval?
+    private var alignedToLaunch = false
+    private var firstFireTime: CFTimeInterval?
     private weak var window: UIWindow?
     private var completion: (() -> Void)?
 
     /// Starts replaying. Only `kind == .touch` rows are used. Recording is
     /// paused for the duration: the synthetic touches flow back through
     /// `TrackingWindow.sendEvent` and would otherwise be re-recorded.
+    ///
+    /// `launchReference` is the media time at which this process started its
+    /// recording session (see `CrashCam.bootstrap`). When it is given and the
+    /// recording carries a session-start row, the first touch is fired at the
+    /// same delay after launch as it was recorded — or immediately if that
+    /// moment has already passed. Without either, the first touch fires now.
     public func replay(_ recording: [UserTapInfo],
                        in window: UIWindow,
                        speed: Double = 1.0,
+                       launchReference: CFTimeInterval? = nil,
                        completion: (() -> Void)? = nil) {
         guard !isReplaying else { return }
 
         let touches = recording.filter { $0.kind == .touch }
-        let skipped = recording.count - touches.count
+        let sessionStart = recording.first { $0.kind == .sessionStart }
+        let skipped = recording.filter { $0.kind != .touch && $0.kind != .sessionStart }.count
         if skipped > 0 {
             print("CrashCam replay: skipping \(skipped) non-touch event(s) — touches-only replayer")
         }
@@ -80,12 +95,14 @@ public final class TouchReplayer {
             return
         }
 
-        let t0 = first.timestamp
+        alignedToLaunch = sessionStart != nil && launchReference != nil
+        self.launchReference = launchReference
+        let origin = alignedToLaunch ? sessionStart!.timestamp : first.timestamp
         events = touches
             .map {
                 ScheduledEvent(phase: $0.phase,
                                point: $0.location,
-                               offset: $0.timestamp.timeIntervalSince(t0) / speed)
+                               offset: $0.timestamp.timeIntervalSince(origin) / speed)
             }
             .sorted { $0.offset < $1.offset }
 
@@ -99,11 +116,30 @@ public final class TouchReplayer {
         cursor = 0
         activeTouch = nil
         maxLateness = 0
+        firstFireTime = nil
         isReplaying = true
         CrashCamLogger.shared.isPaused = true
-        startTime = CACurrentMediaTime()
+
+        let now = CACurrentMediaTime()
+        let firstOffset = events[0].offset
+        if alignedToLaunch, let launchReference {
+            let due = launchReference + firstOffset
+            if due > now {
+                // Pin the timeline's origin to the launch: the first touch
+                // then fires exactly firstOffset after it, as recorded.
+                startTime = launchReference
+                print(String(format: "CrashCam replay: first touch was recorded %.2fs after launch — waiting %.2fs to match",
+                             firstOffset, due - now))
+            } else {
+                startTime = now - firstOffset
+                print(String(format: "CrashCam replay: first touch was recorded %.2fs after launch, but launch was %.2fs ago — starting now",
+                             firstOffset, now - launchReference))
+            }
+        } else {
+            startTime = now
+        }
         print("CrashCam replay: \(events.count) touch events over "
-              + String(format: "%.2f", events.last?.offset ?? 0) + "s")
+              + String(format: "%.2f", (events.last?.offset ?? 0) - firstOffset) + "s")
 
         let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
         // Highest refresh the display offers = best timing resolution.
@@ -144,6 +180,7 @@ public final class TouchReplayer {
         // Fire everything due this frame, in recorded order.
         while cursor < events.count, events[cursor].offset <= elapsed {
             maxLateness = max(maxLateness, elapsed - events[cursor].offset)
+            if firstFireTime == nil { firstFireTime = CACurrentMediaTime() }
             fire(events[cursor])
             cursor += 1
         }
@@ -242,11 +279,19 @@ public final class TouchReplayer {
     // drift plus the worst single-event lateness, printed and written to
     // Documents so a headless run can read them back.
     private func reportStats(elapsed: TimeInterval) {
-        let expected = events.last?.offset ?? 0
-        let summary = String(
+        // Durations are measured from the first touch's due time, so they read
+        // the same whether or not the timeline was pinned to the launch.
+        let firstOffset = events.first?.offset ?? 0
+        let expected = (events.last?.offset ?? 0) - firstOffset
+        let actual = elapsed - firstOffset
+        var summary = String(
             format: "CrashCam replay finished: %d events, expected %.3fs, actual %.3fs, end drift %+.1fms, max event lateness %.1fms",
-            events.count, expected, elapsed, (elapsed - expected) * 1000, maxLateness * 1000
+            events.count, expected, actual, (actual - expected) * 1000, maxLateness * 1000
         )
+        if alignedToLaunch, let launchReference, let firstFireTime {
+            summary += String(format: ", first touch %.3fs after launch (recorded %.3fs)",
+                              firstFireTime - launchReference, firstOffset)
+        }
         print(summary)
         let url = FileManager.default
             .urls(for: .documentDirectory, in: .userDomainMask)[0]
