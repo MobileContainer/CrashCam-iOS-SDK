@@ -204,9 +204,12 @@ public final class CrashCam {
         }
         print("CrashCam replay: loaded \(recording.count) event(s) from \(fileURL.path)")
 
+        // The replay pointer overlay is a window too (still fading out if a
+        // replay just ended) — never replay into it.
         let windows = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap(\.windows)
+            .filter { !($0 is ReplayPointerWindow) }
         guard let window = windows.first(where: \.isKeyWindow) ?? windows.first else {
             print("CrashCam replay: no window to replay into")
             return false

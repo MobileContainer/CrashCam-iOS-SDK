@@ -27,7 +27,7 @@ https://github.com/MobileContainer/CrashCam-iOS-SDK
 or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "1.0.1")
+.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "1.0.2")
 ```
 
 The library product is `CrashCam-iOS`; the module you import is `CrashCam`.
@@ -138,6 +138,10 @@ card on the dashboard.
 - Launch arguments: `-CrashCamReplayOnLaunch` replays the app's own last
   recording ~2s after launch; `-CrashCamReplayFile <absolute path>` replays a
   chosen recording (Simulator: host paths work directly).
+- A pointer overlay shows every replayed touch: an orange disc that scales in
+  on touch-down, follows drags with a fading trail and ripples out on lift,
+  drawn in a pass-through window above the app. Set
+  `TouchReplayer.shared.showsPointer = false` before replaying to hide it.
 - Recordings store raw window coordinates; replaying on a different screen
   size is detected and warned about, never rescaled.
 

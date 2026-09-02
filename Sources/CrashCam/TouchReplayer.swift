@@ -34,6 +34,13 @@ public final class TouchReplayer {
 
     public private(set) var isReplaying = false
 
+    /// Draws a translucent disc wherever a synthetic touch lands — following
+    /// drags and rippling out on lift — so the replay can be watched on
+    /// screen instead of inferred from the app's reaction. On by default;
+    /// set to false before calling `replay` to run invisibly.
+    public var showsPointer = true
+    private let pointer = ReplayPointerOverlay()
+
     private struct ScheduledEvent {
         let phase: UserTapInfo.Phase
         let point: CGPoint
@@ -86,6 +93,9 @@ public final class TouchReplayer {
 
         self.window = window
         self.completion = completion
+        if showsPointer {
+            pointer.attach(above: window)
+        }
         cursor = 0
         activeTouch = nil
         maxLateness = 0
@@ -107,6 +117,7 @@ public final class TouchReplayer {
     /// Stops early; a finger still down is cancelled so UIKit state is clean.
     public func stop() {
         if let touch = activeTouch {
+            pointer.touchCancelled()
             touch.crs_setPhase(.cancelled)
             CRSTouchSender.send([touch])
             activeTouch = nil
@@ -115,6 +126,7 @@ public final class TouchReplayer {
     }
 
     private func finish() {
+        pointer.detach(after: 0.5)
         displayLink?.invalidate()
         displayLink = nil
         isReplaying = false
@@ -143,6 +155,9 @@ public final class TouchReplayer {
             // final gesture actually fires — the in-process equivalent of the
             // synthesized pointerUp the Appium scripts append.
             if let touch = activeTouch {
+                if let window {
+                    pointer.touchEnded(at: lastPoint, in: window)
+                }
                 touch.crs_move(to: lastPoint)
                 touch.crs_setPhase(.ended)
                 CRSTouchSender.send([touch])
@@ -155,27 +170,34 @@ public final class TouchReplayer {
 
     private func fire(_ e: ScheduledEvent) {
         guard let window else { return }
+        let previousPoint = lastPoint
         lastPoint = e.point
 
+        // The pointer is updated before each injection: what the overlay
+        // shows is the touch that is about to be delivered.
         switch e.phase {
         case .began:
             // A began while a stroke is open means its ended was never
             // recorded — close the old stroke before starting the new one.
             if let touch = activeTouch {
+                pointer.touchEnded(at: previousPoint, in: window)
                 touch.crs_setPhase(.ended)
                 CRSTouchSender.send([touch])
             }
             guard let touch = UITouch.crs_touchBeginning(at: e.point, window: window) else { return }
             activeTouch = touch
+            pointer.touchBegan(at: e.point, in: window)
             CRSTouchSender.send([touch])
 
         case .moved:
             guard let touch = activeTouch else { return }
+            pointer.touchMoved(to: e.point, in: window)
             touch.crs_move(to: e.point)
             CRSTouchSender.send([touch])
 
         case .ended:
             guard let touch = activeTouch else { return }
+            pointer.touchEnded(at: e.point, in: window)
             touch.crs_move(to: e.point) // final position
             touch.crs_setPhase(.ended)
             CRSTouchSender.send([touch])
