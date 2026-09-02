@@ -21,13 +21,13 @@ frame-accurate timing to reproduce the crash on demand.
 Add the package in Xcode (**File → Add Package Dependencies…**):
 
 ```
-https://github.com/<your-github>/CrashCam-iOS
+https://github.com/MobileContainer/CrashCam-iOS-SDK
 ```
 
 or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/<your-github>/CrashCam-iOS", from: "1.0.0")
+.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "1.0.1")
 ```
 
 The library product is `CrashCam-iOS`; the module you import is `CrashCam`.
@@ -95,7 +95,7 @@ binary UUID):
 ```sh
 export CRASHCAM_SERVER_URL="https://<your-server>"
 export CRASHCAM_UPLOAD_TOKEN="<this app's token>"
-"${BUILD_DIR%/Build/*}/SourcePackages/checkouts/CrashCam-iOS/scripts/upload-dsyms.sh"
+"${BUILD_DIR%/Build/*}/SourcePackages/checkouts/CrashCam-iOS-SDK/scripts/upload-dsyms.sh"
 ```
 
 Notes:
@@ -107,6 +107,14 @@ Notes:
   *DWARF with dSYM File* for Debug to opt Debug builds in.
 - `CRASHCAM_SERVER_URL` accepts several space-separated URLs; each gets every
   dSYM. The script never fails the build — an unreachable server only logs.
+- The upload runs in the background, so the build never waits on the network
+  (large apps ship dSYMs of hundreds of MB). Progress goes to a log file under
+  `~/Library/Logs/CrashCam/`; its path is printed in the build log. Set
+  `CRASHCAM_FOREGROUND=1` to upload synchronously instead — for CI machines
+  that may shut down right after the build.
+- Slices already uploaded to a server are remembered by UUID in
+  `~/Library/Caches/CrashCam/uploaded-dsyms` and skipped, so incremental
+  rebuilds upload nothing.
 
 ### 4. Server-side: mint the app's token
 
@@ -141,5 +149,3 @@ card on the dashboard.
 - The upload endpoint should be HTTPS (no ATS exceptions needed). For plain
   HTTP to localhost during development, add the
   `NSAllowsLocalNetworking` ATS exception.
-# CrashCam-iOS-SDK
-# CrashCam-iOS-SDK
