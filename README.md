@@ -27,7 +27,7 @@ https://github.com/MobileContainer/CrashCam-iOS-SDK
 or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "1.0.3")
+.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "1.0.4")
 ```
 
 The library product is `CrashCam-iOS`; the module you import is `CrashCam`.
@@ -107,14 +107,24 @@ Notes:
   *DWARF with dSYM File* for Debug to opt Debug builds in.
 - `CRASHCAM_SERVER_URL` accepts several space-separated URLs; each gets every
   dSYM. The script never fails the build — an unreachable server only logs.
-- The upload runs in the background, so the build never waits on the network
-  (large apps ship dSYMs of hundreds of MB). Progress goes to a log file under
-  `~/Library/Logs/CrashCam/`; its path is printed in the build log. Set
+- Each DWARF is sent one architecture slice at a time, with the sections
+  symbolication never reads (the embedded Swift module ASTs and the variable
+  location lists) blanked and the result gzipped: a ~290 MB slice of a large
+  Swift app goes out as ~40 MB, so uploads stay under typical proxy body
+  limits and finish in minutes instead of timing out. Symbol names, file and
+  line info and inline frames are untouched. Needs crash-server from
+  2026-09-03 or later; for an older server set `CRASHCAM_RAW_UPLOAD=1`.
+- The upload runs in the background, so the build never waits on the network.
+  Progress goes to a log file under `~/Library/Logs/CrashCam/`; its path is
+  printed in the build log, and **failures are only visible there**. Set
   `CRASHCAM_FOREGROUND=1` to upload synchronously instead — for CI machines
   that may shut down right after the build.
 - Slices already uploaded to a server are remembered by UUID in
   `~/Library/Caches/CrashCam/uploaded-dsyms` and skipped, so incremental
   rebuilds upload nothing.
+- If the project also makes Debug dSYMs (a project-level *DWARF with dSYM
+  File*), every Debug build uploads one too. Keep the phase to Release builds
+  by making its first line `[ "$CONFIGURATION" = Release ] || exit 0`.
 
 ### 4. Server-side: mint the app's token
 

@@ -3,12 +3,27 @@
 # Xcode build phase: upload this build's dSYMs to a running crash-server so the
 # dashboard can symbolicate uploaded crash reports (matched by binary UUID).
 #
+# What is sent, per DWARF file inside each .dSYM bundle:
+#   1. The file is snapshotted (see stable_copy) and split into one file per
+#      architecture (`lipo -thin`). The server keys its store by slice UUID, so
+#      every slice is its own upload and slices already on the server are
+#      skipped individually.
+#   2. Sections crash symbolication never reads are zeroed in the copy: the
+#      embedded Swift module ASTs (__swift_ast, used only by LLDB) and the
+#      variable location lists (__debug_loc). Layout, LC_UUID, symbol table,
+#      function and line info stay untouched, so atos and llvm-symbolizer
+#      resolve frames exactly as before. Zeroing instead of removing keeps the
+#      Mach-O valid without rewriting offsets.
+#   3. The slice is gzipped; the zeroed bytes vanish. A ~290 MB slice of a
+#      large Swift app ships as ~40 MB, well under typical proxy body limits.
+#   crash-server inflates gzipped uploads since 2026-09-03. For an older server
+#   set CRASHCAM_RAW_UPLOAD=1 (no trimming, no gzip — one upload per slice).
+#
 # The upload runs DETACHED: Xcode only waits for processes holding the build
 # log's pipes, so the build finishes immediately while the upload continues in
-# the background (large apps ship dSYMs of hundreds of MB — never make the
-# build wait on the network). Progress goes to a log file whose path is printed
-# in the build log. Set CRASHCAM_FOREGROUND=1 to upload synchronously instead
-# (CI machines may disappear right after the build).
+# the background. Progress goes to a log file whose path is printed in the
+# build log. Set CRASHCAM_FOREGROUND=1 to upload synchronously instead (CI
+# machines may disappear right after the build).
 #
 # Slices already uploaded (per server, matched by UUID) are recorded in
 # ~/Library/Caches/CrashCam/uploaded-dsyms and skipped, so incremental rebuilds
@@ -16,7 +31,10 @@
 #
 # Debug builds default to DEBUG_INFORMATION_FORMAT=dwarf (no dSYM bundle), so
 # with stock settings this only ever uploads for Release builds. The gate is
-# "a dSYM exists", not the configuration name.
+# "a dSYM exists", not the configuration name. A project that makes Debug
+# dSYMs too can keep Debug builds out with a first line of
+#     [ "$CONFIGURATION" = Release ] || exit 0
+# in its Run Script phase.
 #
 # This script must never fail the build: no server running is a normal state.
 # Override the target with CRASHCAM_SERVER_URL (default http://localhost:4000);
@@ -75,11 +93,13 @@ mark_uploaded() { # $1 = dwarf path, $2 = server url
     done
 }
 
+size_mb() { echo $(( $(/usr/bin/stat -f %z "$1" 2>/dev/null || echo 0) / 1048576 )); }
+
 # Snapshot a DWARF before uploading. The upload runs detached, so the next
 # build (or a dsymutil still finalizing the bundle) can rewrite the file while
 # curl reads it — a torn upload fails with "curl: (26) ... EOF". Wait for the
 # size to hold still, then clone it (APFS copy-on-write; falls back to a real
-# copy) and upload the immutable snapshot.
+# copy) and work on the immutable snapshot.
 stable_copy() { # $1 = src, $2 = dst
     local s1 s2 tries=0
     while :; do
@@ -93,47 +113,175 @@ stable_copy() { # $1 = src, $2 = dst
     /bin/cp -c "$1" "$2" 2>/dev/null || /bin/cp "$1" "$2"
 }
 
+# Zero the sections symbolication never reads, in place, in a snapshot. Best
+# effort: without python3, or on an unexpected file, the slice goes untrimmed.
+slim_dwarf() { # $1 = slice path
+    local py
+    py=$(/usr/bin/xcrun -f python3 2>/dev/null) || py=/usr/bin/python3
+    if [ ! -x "$py" ]; then
+        echo "CrashCam: python3 not found — uploading $(basename "$1") untrimmed."
+        return 0
+    fi
+    "$py" - "$1" <<'PY' || echo "CrashCam: trimming $(basename "$1") failed — uploading it untrimmed."
+import struct, sys
+
+DEAD = {(b"__DWARF", b"__swift_ast"), (b"__DWARF", b"__debug_loc"),
+        (b"__DWARF", b"__debug_loclists")}
+CHUNK = 1 << 20
+
+def slice_bases(f):
+    f.seek(0)
+    magic = f.read(4)
+    if magic not in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf"):
+        return [0]
+    fat64 = magic == b"\xca\xfe\xba\xbf"
+    n = struct.unpack(">I", f.read(4))[0]
+    bases = []
+    for _ in range(n):
+        if fat64:
+            _, _, off, _, _, _ = struct.unpack(">IIQQII", f.read(32))
+        else:
+            _, _, off, _, _ = struct.unpack(">IIIII", f.read(20))
+        bases.append(off)
+    return bases
+
+def dead_ranges(f, base, file_size):
+    f.seek(base)
+    if f.read(4) != b"\xcf\xfa\xed\xfe":  # MH_MAGIC_64, little-endian only
+        return []
+    f.seek(base + 16)
+    ncmds = struct.unpack("<I", f.read(4))[0]
+    p = base + 32
+    ranges = []
+    for _ in range(ncmds):
+        f.seek(p)
+        cmd, cmdsize = struct.unpack("<II", f.read(8))
+        if cmdsize < 8:
+            break
+        if cmd == 0x19:  # LC_SEGMENT_64
+            f.seek(p + 64)
+            nsects = struct.unpack("<I", f.read(4))[0]
+            q = p + 72
+            for _ in range(nsects):
+                f.seek(q)
+                sect = f.read(80)
+                name = sect[0:16].rstrip(b"\0")
+                seg = sect[16:32].rstrip(b"\0")
+                size, off = struct.unpack("<QI", sect[40:52])
+                if (seg, name) in DEAD and off and size:
+                    start = base + off
+                    end = min(start + size, file_size)
+                    if end > start:
+                        ranges.append((name.decode(), start, end))
+                q += 80
+        p += cmdsize
+    return ranges
+
+zeros = bytes(CHUNK)
+with open(sys.argv[1], "r+b") as f:
+    f.seek(0, 2)
+    file_size = f.tell()
+    totals = {}
+    for base in slice_bases(f):
+        for name, start, end in dead_ranges(f, base, file_size):
+            f.seek(start)
+            left = end - start
+            while left > 0:
+                n = min(left, CHUNK)
+                f.write(zeros[:n])
+                left -= n
+            totals[name] = totals.get(name, 0) + (end - start)
+trimmed = ", ".join("%s %.1f MB" % (k, v / 1048576) for k, v in totals.items())
+print("CrashCam: trimmed %s: %s" % (sys.argv[1].rsplit("/", 1)[-1], trimmed or "nothing to trim"))
+PY
+}
+
+upload_slice() { # $1 = dSYM bundle path, $2 = binary name, $3 = arch, $4 = slice path (a snapshot; modified in place)
+    local dsym="$1" name="$2" arch="$3" slice="$4"
+    local label targets="" SERVER_URL payload encoding response
+    label="$(basename "$dsym") ($name, $arch)"
+    for SERVER_URL in $SERVER_URLS; do
+        if already_uploaded "$slice" "$SERVER_URL"; then
+            echo "CrashCam: $label already on $SERVER_URL (UUID match) — skipping."
+        else
+            targets="$targets $SERVER_URL"
+        fi
+    done
+    [ -n "$targets" ] || return 0
+
+    payload="$slice"; encoding="raw"
+    if [ "${CRASHCAM_RAW_UPLOAD:-0}" != "1" ]; then
+        slim_dwarf "$slice"
+        if /usr/bin/gzip -6 -c "$slice" > "$slice.gz" 2>/dev/null; then
+            payload="$slice.gz"; encoding="gzip"
+        else
+            rm -f "$slice.gz"
+            echo "CrashCam: gzip failed for $(basename "$slice") — uploading it raw."
+        fi
+    fi
+    echo "CrashCam: $label is $(size_mb "$slice") MB on disk, sending $(size_mb "$payload") MB ($encoding)."
+
+    for SERVER_URL in $targets; do
+        echo "CrashCam: uploading dSYM $label → $SERVER_URL/api/dsyms"
+        response=$(/usr/bin/curl --silent --show-error --max-time 600 \
+            --retry 1 --retry-all-errors \
+            ${TOKEN_HEADER[@]+"${TOKEN_HEADER[@]}"} \
+            -F "dsym=@${payload};filename=${name}.${arch}$([ "$encoding" = gzip ] && echo .gz)" \
+            -F "binaryName=$name" \
+            -F "arch=$arch" \
+            -F "encoding=$encoding" \
+            -F "appName=${PRODUCT_NAME:-}" \
+            -F "bundleId=${PRODUCT_BUNDLE_IDENTIFIER:-}" \
+            -F "appVersion=${MARKETING_VERSION:-}" \
+            -F "buildNumber=${CURRENT_PROJECT_VERSION:-}" \
+            -F "configuration=${CONFIGURATION:-}" \
+            "$SERVER_URL/api/dsyms" 2>&1)
+        if [ $? -eq 0 ] && [[ "$response" == *'"uuids"'* ]]; then
+            echo "CrashCam: dSYM upload response: $response"
+            mark_uploaded "$slice" "$SERVER_URL"
+        else
+            echo "warning: CrashCam dSYM upload failed (is crash-server running at $SERVER_URL?): $response"
+        fi
+    done
+    [ "$payload" != "$slice" ] && rm -f "$payload"
+    return 0
+}
+
 upload_all() {
-    local found=0 dsym dwarf SERVER_URL response snap
+    local found=0 dsym dwarf name snap archs nslices arch slice
     for dsym in "$DWARF_DSYM_FOLDER_PATH"/*.dSYM; do
         [ -d "$dsym" ] || continue
         # A dSYM bundle is a directory wrapper; the actual DWARF binaries live
-        # in Contents/Resources/DWARF/. Upload those directly — the server
-        # derives the UUIDs itself.
+        # in Contents/Resources/DWARF/. The server derives the UUIDs itself.
         for dwarf in "$dsym"/Contents/Resources/DWARF/*; do
             [ -f "$dwarf" ] || continue
             found=1
-            snap="${TMPDIR:-/tmp}/crashcam-snap-$$-$(basename "$dwarf")"
+            name=$(basename "$dwarf")
+            snap="${TMPDIR:-/tmp}/crashcam-snap-$$-$name"
             if ! stable_copy "$dwarf" "$snap"; then
-                echo "warning: CrashCam could not snapshot $(basename "$dwarf") (kept changing on disk?) — will retry on the next build."
+                echo "warning: CrashCam could not snapshot $name (kept changing on disk?) — will retry on the next build."
                 rm -f "$snap"
                 continue
             fi
-            for SERVER_URL in $SERVER_URLS; do
-                if already_uploaded "$snap" "$SERVER_URL"; then
-                    echo "CrashCam: $(basename "$dsym") ($(basename "$dwarf")) already on $SERVER_URL (UUID match) — skipping."
-                    continue
-                fi
-                echo "CrashCam: uploading dSYM $(basename "$dsym") ($(basename "$dwarf")) → $SERVER_URL/api/dsyms"
-                response=$(/usr/bin/curl --silent --show-error --max-time 600 \
-                    --retry 1 --retry-all-errors \
-                    ${TOKEN_HEADER[@]+"${TOKEN_HEADER[@]}"} \
-                    -F "dsym=@${snap}" \
-                    -F "binaryName=$(basename "$dwarf")" \
-                    -F "appName=${PRODUCT_NAME:-}" \
-                    -F "bundleId=${PRODUCT_BUNDLE_IDENTIFIER:-}" \
-                    -F "appVersion=${MARKETING_VERSION:-}" \
-                    -F "buildNumber=${CURRENT_PROJECT_VERSION:-}" \
-                    -F "configuration=${CONFIGURATION:-}" \
-                    "$SERVER_URL/api/dsyms" 2>&1)
-                if [ $? -eq 0 ] && [[ "$response" == *'"uuids"'* ]]; then
-                    echo "CrashCam: dSYM upload response: $response"
-                    mark_uploaded "$snap" "$SERVER_URL"
-                else
-                    echo "warning: CrashCam dSYM upload failed (is crash-server running at $SERVER_URL?): $response"
-                fi
-            done
-            rm -f "$snap"
+            archs=$(/usr/bin/lipo -archs "$snap" 2>/dev/null)
+            nslices=$(echo $archs | /usr/bin/wc -w)
+            if [ "$nslices" -le 1 ]; then
+                upload_slice "$dsym" "$name" "${archs:-unknown}" "$snap"
+            else
+                for arch in $archs; do
+                    slice="$snap.$arch"
+                    if /usr/bin/lipo "$snap" -thin "$arch" -output "$slice" 2>/dev/null; then
+                        upload_slice "$dsym" "$name" "$arch" "$slice"
+                        rm -f "$slice"
+                    else
+                        echo "warning: CrashCam could not extract the $arch slice of $name — uploading the fat file instead."
+                        rm -f "$slice"
+                        upload_slice "$dsym" "$name" "fat" "$snap"
+                        break
+                    fi
+                done
+            fi
+            rm -f "$snap" "$snap.gz"
         done
     done
 
