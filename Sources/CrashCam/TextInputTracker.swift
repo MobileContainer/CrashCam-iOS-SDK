@@ -52,7 +52,7 @@ public final class TextInputTracker: NSObject {
     }
 
     @objc private func keyboardWillHide(_ note: Notification) {
-        CrashCamLogger.shared.add(UserTapInfo(keyboardHideAt: Date()))
+        CrashCamLogger.shared.add(UserTapInfo(keyboardHideAt: Date(), screen: ScreenTracker.shared.currentScreen))
     }
 
     private func record(view: UIView, length: Int) {
@@ -60,7 +60,8 @@ public final class TextInputTracker: NSObject {
         // into the focused element, not this point). Never includes any text.
         let origin = view.convert(view.bounds, to: nil).origin
         CrashCamLogger.shared.add(
-            UserTapInfo(textChangeAt: origin, timestamp: Date(), textLength: length)
+            UserTapInfo(textChangeAt: origin, timestamp: Date(), textLength: length,
+                        screen: ScreenTracker.shared.currentScreen)
         )
     }
 }

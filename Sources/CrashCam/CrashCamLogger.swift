@@ -5,6 +5,7 @@
 //  Created by Metin Tarık Kiki on 28.12.2025.
 //
 
+import CoreGraphics
 import Foundation
 
 @MainActor
@@ -90,13 +91,13 @@ public final class CrashCamLogger {
     /// then writes the session-start marker as its first row: a replay of this
     /// session can then fire its first touch at the same delay after launch
     /// as the user did.
-    public func startNewSession() {
+    public func startNewSession(screenSize: CGSize? = nil, scale: CGFloat? = nil) {
         queue.sync {
             try? handle?.close()
             handle = nil
             try? Data().write(to: eventsFileURL, options: .atomic)
         }
-        append(UserTapInfo(sessionStartAt: Date()))
+        append(UserTapInfo(sessionStartAt: Date(), screenSize: screenSize, scale: scale))
     }
 
     /// Reads the durable event log written by the crashed session and writes

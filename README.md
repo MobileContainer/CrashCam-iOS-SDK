@@ -27,7 +27,7 @@ https://github.com/MobileContainer/CrashCam-iOS-SDK
 or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "1.0.4")
+.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "1.1.0")
 ```
 
 The library product is `CrashCam-iOS`; the module you import is `CrashCam`.
@@ -140,6 +140,45 @@ missing; hot-reloaded, no restart needed):
 Uploads carrying that token are attributed to that bundle id (the token's
 identity overrides whatever the client claims), and the app appears as its own
 card on the dashboard.
+
+## Screens and elements
+
+Every recorded event says where it happened, so the dashboard can cut a
+session into screens and draw heatmaps per screen. Nothing is required from
+the app:
+
+- **Automatic screen names.** A `viewDidAppear` hook records a screen change
+  whenever the visible view controller changes, resolved through presented,
+  navigation, tab, split and page containers. The name is the controller's
+  class (`BusJourneyListViewController`); a `UIHostingController` reports its
+  root SwiftUI view type (`ContentView`). Disable with
+  `CrashCam.shared.automaticScreenTracking = false` (touch-time resolution and
+  manual markers still work).
+- **Manual names override the automatic ones** wherever a class name is not
+  meaningful — SwiftUI navigation destinations, generic containers, an
+  anonymous `VStack` root:
+
+  ```swift
+  // SwiftUI: on a screen's root view
+  CheckoutView().crashCamScreen("Checkout")
+
+  // UIKit: on the controller, e.g. in viewDidLoad
+  crashCamScreenName = "Checkout"
+
+  // Anywhere: names whatever is on top right now
+  CrashCam.shared.markScreen("Checkout")
+  ```
+
+- **Touched elements.** A touch-down records the touched element's class
+  (`UIButton`, a custom cell class, `SwiftUI` for SwiftUI content) and its
+  `accessibilityIdentifier` when the app set one. Accessibility *labels* and
+  text are never recorded.
+- **Geometry.** The session-start and screen-change rows carry the window size
+  in points and the screen scale, so a viewer can draw the recording to scale.
+
+Recording format: rows gain optional `screen`, `element`, `elementId`,
+`screenSize` and `scale` fields, and a `kind: 4` (screen change) row. Older
+recordings without them still decode and replay.
 
 ## Debug-only replay
 

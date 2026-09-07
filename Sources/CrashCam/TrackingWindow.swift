@@ -19,35 +19,44 @@ public final class TrackingWindow: UIWindow {
         if event.type == .touches,
            let touches = event.allTouches {
 
+            let tracker = ScreenTracker.shared
+
             for touch in touches where touch.phase == .began {
+                // A touch is the safety net for screen changes that happened
+                // without a viewDidAppear (or while automatic tracking was
+                // off): re-resolve the visible screen before attributing it.
+                tracker.noteScreen(in: self)
                 let location = touch.location(in: touch.window)
+                let element = ScreenTracker.element(for: touch.view)
                 let info = UserTapInfo(
                     location: location,
                     timestamp: Date(),
-                    phase: .began
+                    phase: .began,
+                    screen: tracker.currentScreen,
+                    element: element.name,
+                    elementId: element.id
                 )
                 CrashCamLogger.shared.add(info)
             }
-
 
             for touch in touches where touch.phase == .moved {
                 let location = touch.location(in: touch.window)
                 let info = UserTapInfo(
                     location: location,
                     timestamp: Date(),
-                    phase: .moved
+                    phase: .moved,
+                    screen: tracker.currentScreen
                 )
                 CrashCamLogger.shared.add(info)
             }
-
-
 
             for touch in touches where touch.phase == .ended {
                 let location = touch.location(in: touch.window)
                 let info = UserTapInfo(
                     location: location,
                     timestamp: Date(),
-                    phase: .ended
+                    phase: .ended,
+                    screen: tracker.currentScreen
                 )
                 CrashCamLogger.shared.add(info)
             }

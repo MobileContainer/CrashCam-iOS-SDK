@@ -31,6 +31,16 @@ public final class CrashCam {
     /// deployment); leave nil for an open (local) server.
     public var uploadToken: String?
 
+    /// Automatic screen tracking: a `viewDidAppear` hook records a screen
+    /// change whenever the visible view controller changes (see
+    /// `ScreenTracker`). On by default. Screens can always be named manually
+    /// with `markScreen(_:)`, the `.crashCamScreen(_:)` view modifier or a
+    /// controller's `crashCamScreenName`, which override the automatic name.
+    public var automaticScreenTracking: Bool {
+        get { ScreenTracker.shared.isAutomatic }
+        set { ScreenTracker.shared.isAutomatic = newValue }
+    }
+
     private let crashReporter: PLCrashReporter? = PLCrashReporter(configuration: PLCrashReporterConfig.defaultConfiguration())
     private var crashFD = Int32(-1)
     private var crashFDPointer: UnsafeMutableRawPointer?
@@ -92,12 +102,16 @@ public final class CrashCam {
         #if DEBUG
         launchMediaTime = CACurrentMediaTime()
         #endif
-        CrashCamLogger.shared.startNewSession()
+        let geometry = Self.screenGeometry()
+        CrashCamLogger.shared.startNewSession(screenSize: geometry.size, scale: geometry.scale)
 
         // Start recording text-field/-view edits (length only) into the same
         // event stream. Touches are captured by TrackingWindow; this covers the
         // keyboard side.
         TextInputTracker.shared.start()
+
+        // Screen names on every row, screen-change rows as controllers appear.
+        ScreenTracker.shared.start()
 
         crashReporter?.enable()
 
@@ -273,7 +287,8 @@ public final class CrashCam {
         // original recording in crash_cam.txt survives for another replay —
         // instead of being overwritten by the handful of taps that started
         // this one.
-        CrashCamLogger.shared.startNewSession()
+        let geometry = Self.screenGeometry()
+        CrashCamLogger.shared.startNewSession(screenSize: geometry.size, scale: geometry.scale)
 
         TouchReplayer.shared.replay(recording,
                                     in: window,
@@ -283,6 +298,24 @@ public final class CrashCam {
         return true
     }
     #endif
+
+    /// Names the screen currently on top (overriding its automatic name) and
+    /// records a screen change. Use it for screens whose controller class is
+    /// not meaningful — SwiftUI navigation destinations, generic containers.
+    public func markScreen(_ name: String) {
+        ScreenTracker.shared.markScreen(name)
+    }
+
+    /// Size (points) and scale of the screen the app draws on: the first
+    /// connected window scene's screen, or the main screen before any scene
+    /// exists (bootstrap runs before scenes connect).
+    private static func screenGeometry() -> (size: CGSize?, scale: CGFloat?) {
+        if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+            return (scene.screen.bounds.size, scene.screen.scale)
+        }
+        let screen = UIScreen.main
+        return (screen.bounds.size, screen.scale)
+    }
 
     public func saveCrashInfo(_ info: String) {
         let fileURL = FileManager.default
