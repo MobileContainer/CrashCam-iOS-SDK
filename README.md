@@ -199,6 +199,39 @@ recordings without them still decode and replay.
 - Recordings store raw window coordinates; replaying on a different screen
   size is detected and warned about, never rescaled.
 
+### Replay button
+
+A floating button for starting a replay by hand, from wherever the app is —
+what you want for a clip cropped from the middle of a session in the
+dashboard's replay editor: bring the app to the clip's first screen, then
+press play. Off by default:
+
+```swift
+CrashCam.shared.bootstrap(uploadEndpoint: …, uploadToken: …)
+CrashCam.shared.showsReplayButton = true   // Debug builds only; no-op in Release
+```
+
+or pass the `-CrashCamReplayButton` launch argument. Tapping the bubble lists:
+
+- **Replay last crash** — the app's own last crashed session.
+- Every `.json` in the app's **`Documents/CrashCam/replays/`**, newest first.
+  On the Simulator, copy a file downloaded from the dashboard there with:
+
+  ```sh
+  D="$(xcrun simctl get_app_container booted <bundle id> data)/Documents/CrashCam/replays" \
+    && mkdir -p "$D" && cp ~/Downloads/touches_x_edited.json "$D/"
+  ```
+
+  (the replay editor shows this command with the right file name).
+- **Choose file…** — the Files picker (on the Simulator, drag a file onto the
+  window to save it into Files first); the pick is copied into the folder above.
+- **Speed** 0.5×–4×, and **Hide until next launch**.
+
+After a 3-2-1 countdown (tap to cancel) the replay starts at its first touch,
+never waiting for "the same time after launch"; the bubble becomes Stop. The
+button lives in its own window, so pressing it is never recorded; drag it to
+either edge and it keeps its place across launches.
+
 ## Requirements
 
 - iOS 15+, Swift Package Manager. Depends on

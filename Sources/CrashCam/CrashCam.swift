@@ -41,6 +41,28 @@ public final class CrashCam {
         set { ScreenTracker.shared.isAutomatic = newValue }
     }
 
+    /// Debug builds only: a floating button that starts a replay by hand —
+    /// the last crash, a recording copied into `Documents/CrashCam/replays/`
+    /// (the dashboard's replay editor shows the `cp` command), or one picked
+    /// in Files — from wherever the app currently is, after a 3-2-1
+    /// countdown. Off by default; the `-CrashCamReplayButton` launch argument
+    /// also turns it on. Has no effect in Release builds, where replay is
+    /// compiled out.
+    public var showsReplayButton: Bool {
+        get {
+            #if DEBUG
+            ReplayButtonController.shared.isEnabled
+            #else
+            false
+            #endif
+        }
+        set {
+            #if DEBUG
+            ReplayButtonController.shared.isEnabled = newValue
+            #endif
+        }
+    }
+
     private let crashReporter: PLCrashReporter? = PLCrashReporter(configuration: PLCrashReporterConfig.defaultConfiguration())
     private var crashFD = Int32(-1)
     private var crashFDPointer: UnsafeMutableRawPointer?
@@ -116,6 +138,9 @@ public final class CrashCam {
         crashReporter?.enable()
 
         #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-CrashCamReplayButton") {
+            showsReplayButton = true
+        }
         scheduleLaunchReplayIfRequested()
         #endif
     }
@@ -195,7 +220,7 @@ public final class CrashCam {
         let windows = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap(\.windows)
-            .filter { !($0 is ReplayPointerWindow) }
+            .filter { !($0 is ReplayPointerWindow) && !($0 is ReplayButtonWindow) }
         return windows.first(where: \.isKeyWindow) ?? windows.first
     }
 
@@ -246,6 +271,17 @@ public final class CrashCam {
         return replay(recording, speed: speed, completion: completion)
     }
 
+    /// The replay button's entry point: replays a file starting now, from
+    /// the app's current state — never waiting for "the same time after
+    /// launch", which the launch-argument and API replays honour.
+    @discardableResult
+    func replayFromHere(fileURL: URL,
+                        speed: Double,
+                        completion: (() -> Void)?) -> Bool {
+        guard let recording = loadRecording(from: fileURL) else { return false }
+        return replay(recording, speed: speed, alignToLaunch: false, completion: completion)
+    }
+
     /// Decodes a recording file, logging why when it cannot be used.
     private func loadRecording(from fileURL: URL) -> [UserTapInfo]? {
         let data: Data
@@ -275,6 +311,7 @@ public final class CrashCam {
     @discardableResult
     private func replay(_ recording: [UserTapInfo],
                         speed: Double,
+                        alignToLaunch: Bool = true,
                         completion: (() -> Void)?) -> Bool {
         guard let window = Self.replayWindow() else {
             print("CrashCam replay: no window to replay into")
@@ -293,7 +330,7 @@ public final class CrashCam {
         TouchReplayer.shared.replay(recording,
                                     in: window,
                                     speed: speed,
-                                    launchReference: launchMediaTime,
+                                    launchReference: alignToLaunch ? launchMediaTime : nil,
                                     completion: completion)
         return true
     }

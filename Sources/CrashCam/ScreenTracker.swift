@@ -122,10 +122,21 @@ public final class ScreenTracker {
         let windows = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap(\.windows)
+            .filter { !isCrashCamOverlay($0) }
         return windows.first { $0.isKeyWindow && $0 is TrackingWindow }
             ?? windows.first(where: \.isKeyWindow)
             ?? windows.first { $0 is TrackingWindow }
             ?? windows.first
+    }
+
+    /// CrashCam's own debug windows (replay pointer, replay button) are never
+    /// the app's window, even when one briefly becomes key.
+    static func isCrashCamOverlay(_ window: UIWindow) -> Bool {
+        #if DEBUG
+        return window is ReplayPointerWindow || window is ReplayButtonWindow
+        #else
+        return false
+        #endif
     }
 
     /// The controller the user sees, starting from a window's root.
