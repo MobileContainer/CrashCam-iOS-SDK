@@ -21,15 +21,32 @@ public final class CrashCam {
 
     public static let shared = CrashCam()
 
-    /// When non-nil, a detected pending crash is uploaded here as
-    /// `multipart/form-data` (the `crash-server` `POST /api/crashes` contract).
-    /// Leave nil to disable uploading; all other behavior is unchanged.
-    public var uploadEndpoint: URL?
+    /// The CrashCam server every app reports to. Not configurable by the
+    /// host app: the SDK release decides where crashes go, the upload token
+    /// decides which app they belong to. The dSYM build phase defaults to
+    /// the same address.
+    public static let serverURL = URL(string: "https://crashcam.kerimcaglar.com")!
 
-    /// Shared secret sent as `X-CrashCam-Token` with the upload. Required by a
-    /// crash-server whose `CRASHCAM_UPLOAD_TOKEN` env var is set (the hosted
-    /// deployment); leave nil for an open (local) server.
-    public var uploadToken: String?
+    /// Info.plist key holding the app's upload token (from the dashboard's
+    /// app settings). Read by `bootstrap()` when no token is passed.
+    public static let tokenInfoKey = "CrashCamToken"
+
+    /// Where this process uploads (`POST /api/crashes`), resolved by
+    /// `bootstrap()`: `serverURL` unless a development override is in effect.
+    /// Nil until bootstrap, or when no token was found — then nothing is
+    /// uploaded and everything else works unchanged.
+    public private(set) var uploadEndpoint: URL?
+
+    /// The app's upload token, sent as `X-CrashCam-Token`.
+    public private(set) var uploadToken: String?
+
+    /// Development only: point this process at another server, e.g. a local
+    /// `crash-server` on `http://localhost:4000`. Set through the
+    /// `-CrashCamServer <url>` launch argument or the `CRASHCAM_SERVER_URL`
+    /// environment variable (both in the Xcode scheme), or assign it before
+    /// `bootstrap()`. Never part of an app's integration — the server is a
+    /// constant on purpose.
+    public var developmentServerURL: URL?
 
     /// Automatic screen tracking: a `viewDidAppear` hook records a screen
     /// change whenever the visible view controller changes (see
@@ -86,17 +103,42 @@ public final class CrashCam {
 
     private init() {}
 
-    /// Call once from `application(_:didFinishLaunchingWithOptions:)`. Pass
-    /// `uploadEndpoint` to enable crash uploads (equivalent to setting the
-    /// `uploadEndpoint` property before calling), and `uploadToken` when that
-    /// server requires one. Defaults preserve the prior no-upload behavior.
-    public func bootstrap(uploadEndpoint: URL? = nil, uploadToken: String? = nil) {
-        if let uploadEndpoint {
-            self.uploadEndpoint = uploadEndpoint
+    /// Decides endpoint + token for this process. Order: explicit argument,
+    /// then Info.plist. The server is `serverURL` unless a development
+    /// override (property, launch argument, environment) names another one.
+    private func resolveUpload(token: String?) {
+        let plistToken = Bundle.main.object(forInfoDictionaryKey: Self.tokenInfoKey) as? String
+        let resolved = (token ?? plistToken)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        uploadToken = (resolved?.isEmpty == false) ? resolved : nil
+
+        var server = Self.serverURL
+        if let override = developmentServerURL ?? Self.launchServerOverride() {
+            server = override
+            print("CrashCam: development server override in effect — uploading to \(override.absoluteString)")
         }
-        if let uploadToken {
-            self.uploadToken = uploadToken
+        uploadEndpoint = uploadToken == nil ? nil : server.appendingPathComponent("api/crashes")
+        if uploadToken == nil {
+            print("CrashCam: no upload token (pass bootstrap(token:) or set \(Self.tokenInfoKey) in Info.plist) — crashes are recorded but not uploaded")
         }
+    }
+
+    private static func launchServerOverride() -> URL? {
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "-CrashCamServer"), i + 1 < args.count, let url = URL(string: args[i + 1]) {
+            return url
+        }
+        if let raw = ProcessInfo.processInfo.environment["CRASHCAM_SERVER_URL"], let url = URL(string: raw) {
+            return url
+        }
+        return nil
+    }
+
+    /// Call once from `application(_:didFinishLaunchingWithOptions:)`.
+    /// `token` is the app's upload token from the dashboard; when nil it is
+    /// read from Info.plist (`CrashCamToken`). Without a token the SDK records
+    /// and replays but never uploads. The server address is `serverURL`.
+    public func bootstrap(token: String? = nil) {
+        resolveUpload(token: token)
 
         setupCrashCallbacks()
         previousSessionStderr = Self.tailOfFile(at: Self.stderrLogURL, maxBytes: 256 * 1024)

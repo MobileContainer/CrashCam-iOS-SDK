@@ -37,18 +37,29 @@
 # in its Run Script phase.
 #
 # This script must never fail the build: no server running is a normal state.
-# Override the target with CRASHCAM_SERVER_URL (default http://localhost:4000);
-# it may hold SEVERAL space-separated URLs and each one gets every dSYM. If a
-# target requires an upload token (its tokens.json has this app), export
-# CRASHCAM_UPLOAD_TOKEN too; it is sent as an X-CrashCam-Token header and open
-# servers simply ignore it.
+# The target is the CrashCam server (CRASHCAM_DEFAULT_SERVER below — the same
+# constant the SDK carries); CRASHCAM_SERVER_URL overrides it and may hold
+# SEVERAL space-separated URLs, each of which gets every dSYM (development:
+# add a local crash-server). The app's upload token is read from the built
+# Info.plist (`CrashCamToken`, the key the SDK reads too), or from
+# CRASHCAM_UPLOAD_TOKEN when exported; it is sent as X-CrashCam-Token.
 
 set -u
 
-SERVER_URLS="${CRASHCAM_SERVER_URL:-http://localhost:4000}"
+CRASHCAM_DEFAULT_SERVER="https://crashcam.kerimcaglar.com"
+SERVER_URLS="${CRASHCAM_SERVER_URL:-$CRASHCAM_DEFAULT_SERVER}"
+
+# Token: the environment wins, else the key in the app's built Info.plist.
+UPLOAD_TOKEN="${CRASHCAM_UPLOAD_TOKEN:-}"
+if [ -z "$UPLOAD_TOKEN" ] && [ -n "${TARGET_BUILD_DIR:-}" ] && [ -n "${INFOPLIST_PATH:-}" ] \
+   && [ -f "$TARGET_BUILD_DIR/$INFOPLIST_PATH" ]; then
+    UPLOAD_TOKEN="$(/usr/libexec/PlistBuddy -c 'Print :CrashCamToken' "$TARGET_BUILD_DIR/$INFOPLIST_PATH" 2>/dev/null || true)"
+fi
 TOKEN_HEADER=()
-if [ -n "${CRASHCAM_UPLOAD_TOKEN:-}" ]; then
-    TOKEN_HEADER=(-H "X-CrashCam-Token: ${CRASHCAM_UPLOAD_TOKEN}")
+if [ -n "$UPLOAD_TOKEN" ]; then
+    TOKEN_HEADER=(-H "X-CrashCam-Token: ${UPLOAD_TOKEN}")
+else
+    echo "CrashCam: no upload token (CrashCamToken in Info.plist or CRASHCAM_UPLOAD_TOKEN) — the server will reject the dSYM upload."
 fi
 
 if [ -z "${DWARF_DSYM_FOLDER_PATH:-}" ] || [ ! -d "$DWARF_DSYM_FOLDER_PATH" ]; then

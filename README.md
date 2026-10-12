@@ -27,7 +27,7 @@ https://github.com/MobileContainer/CrashCam-iOS-SDK
 or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "1.1.0")
+.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "2.0.0")
 ```
 
 The library product is `CrashCam-iOS`; the module you import is `CrashCam`.
@@ -36,18 +36,29 @@ The library product is `CrashCam-iOS`; the module you import is `CrashCam`.
 
 ### 1. Bootstrap (both lifecycles)
 
-Call once at launch, with your server endpoint and this app's upload token:
+The SDK knows where the CrashCam server is (`CrashCam.serverURL`); the only
+thing an app supplies is its **upload token**, shown on the dashboard's app
+settings page. Put it in `Info.plist`:
+
+```xml
+<key>CrashCamToken</key>
+<string>this app's token</string>
+```
+
+and call once at launch:
 
 ```swift
 import CrashCam
 
-CrashCam.shared.bootstrap(
-    uploadEndpoint: URL(string: "https://<your-server>/api/crashes"),
-    uploadToken: "<this app's token>"
-)
+CrashCam.shared.bootstrap()            // reads CrashCamToken from Info.plist
+// or: CrashCam.shared.bootstrap(token: "…")
 ```
 
-Leave `uploadEndpoint` nil to record locally without uploading.
+Without a token the SDK records and replays but never uploads. For
+development against a local `crash-server`, add the launch argument
+`-CrashCamServer http://localhost:4000` to the scheme (or set
+`CrashCam.shared.developmentServerURL` before `bootstrap()`); nothing in the
+integration itself names a server.
 
 ### 2. Install the tracking window
 
@@ -71,7 +82,7 @@ class AppDelegate: CrashCamAppDelegate {
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions:
                          [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        CrashCam.shared.bootstrap(uploadEndpoint: ..., uploadToken: ...)
+        CrashCam.shared.bootstrap()
         return true
     }
 }
@@ -90,11 +101,10 @@ recording needs it.
 
 Add a **Run Script** phase to your app target so every build with a dSYM
 uploads it to the server (reports are symbolicated server-side, matched by
-binary UUID):
+binary UUID). The script reads the token from the built `Info.plist`
+(`CrashCamToken`) and targets the CrashCam server, so the phase is one line:
 
 ```sh
-export CRASHCAM_SERVER_URL="https://<your-server>"
-export CRASHCAM_UPLOAD_TOKEN="<this app's token>"
 "${BUILD_DIR%/Build/*}/SourcePackages/checkouts/CrashCam-iOS-SDK/scripts/upload-dsyms.sh"
 ```
 
@@ -105,8 +115,10 @@ Notes:
   Crashlytics requires).
 - With stock settings only Release builds produce a dSYM; enable
   *DWARF with dSYM File* for Debug to opt Debug builds in.
-- `CRASHCAM_SERVER_URL` accepts several space-separated URLs; each gets every
-  dSYM. The script never fails the build — an unreachable server only logs.
+- `CRASHCAM_UPLOAD_TOKEN` overrides the Info.plist token; `CRASHCAM_SERVER_URL`
+  (development) overrides the server and accepts several space-separated
+  URLs, each of which gets every dSYM. The script never fails the build — an
+  unreachable server only logs.
 - Each DWARF is sent one architecture slice at a time, with the sections
   symbolication never reads (the embedded Swift module ASTs and the variable
   location lists) blanked and the result gzipped: a ~290 MB slice of a large
@@ -126,20 +138,13 @@ Notes:
   File*), every Debug build uploads one too. Keep the phase to Release builds
   by making its first line `[ "$CONFIGURATION" = Release ] || exit 0`.
 
-### 4. Server-side: mint the app's token
+### 4. Dashboard: register the app
 
-On the crash-server host, add an entry to `data/tokens.json` (created if
-missing; hot-reloaded, no restart needed):
-
-```json
-{
-  "<openssl rand -hex 24>": { "app": "com.your.bundleid", "label": "Your App" }
-}
-```
-
-Uploads carrying that token are attributed to that bundle id (the token's
-identity overrides whatever the client claims), and the app appears as its own
-card on the dashboard.
+Sign in to the dashboard, open your team and **＋ Add app** with the bundle id.
+The app's settings page shows its upload token and these snippets. Uploads
+carrying the token are attributed to that app (the token's identity overrides
+whatever the client claims); team members see its crashes, replays and
+heatmaps, and an owner can rotate the token or hand the app to another team.
 
 ## Screens and elements
 
@@ -207,7 +212,7 @@ dashboard's replay editor: bring the app to the clip's first screen, then
 press play. Off by default:
 
 ```swift
-CrashCam.shared.bootstrap(uploadEndpoint: …, uploadToken: …)
+CrashCam.shared.bootstrap()
 CrashCam.shared.showsReplayButton = true   // Debug builds only; no-op in Release
 ```
 
