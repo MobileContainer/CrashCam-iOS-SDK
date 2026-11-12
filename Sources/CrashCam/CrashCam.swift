@@ -25,7 +25,7 @@ public final class CrashCam {
     /// host app: the SDK release decides where crashes go, the upload token
     /// decides which app they belong to. The dSYM build phase defaults to
     /// the same address.
-    public static let serverURL = URL(string: "https://crashcam.kerimcaglar.com")!
+    public static let serverURL = URL(string: "https://crashcam.obilet.com")!
 
     /// Info.plist key holding the app's upload token (from the dashboard's
     /// app settings). Read by `bootstrap()` when no token is passed.

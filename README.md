@@ -4,7 +4,7 @@ Record-and-replay crash reproduction for iOS. CrashCam records every touch your
 app receives (and text-edit *lengths* — never content), keeps the log durably
 on disk across a crash, and on the next launch uploads the crash report, the
 exact input sequence that triggered it, and app/device metadata to a
-[crash-server](https://crashcam.kerimcaglar.com) dashboard — where the report
+[crash-server](https://crashcam.obilet.com) dashboard — where the report
 is symbolicated against your uploaded dSYMs and grouped by crash reason. In
 Debug builds the recorded session can be replayed **in-process** with
 frame-accurate timing to reproduce the crash on demand.
@@ -27,7 +27,7 @@ https://github.com/MobileContainer/CrashCam-iOS-SDK
 or in `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "2.0.0")
+.package(url: "https://github.com/MobileContainer/CrashCam-iOS-SDK", from: "2.0.1")
 ```
 
 The library product is `CrashCam-iOS`; the module you import is `CrashCam`.

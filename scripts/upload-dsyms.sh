@@ -46,7 +46,7 @@
 
 set -u
 
-CRASHCAM_DEFAULT_SERVER="https://crashcam.kerimcaglar.com"
+CRASHCAM_DEFAULT_SERVER="https://crashcam.obilet.com"
 SERVER_URLS="${CRASHCAM_SERVER_URL:-$CRASHCAM_DEFAULT_SERVER}"
 
 # Token: the environment wins, else the key in the app's built Info.plist.
