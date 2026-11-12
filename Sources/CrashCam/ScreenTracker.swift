@@ -117,12 +117,16 @@ public final class ScreenTracker {
     }
 
     /// The app's own window: the key `TrackingWindow` if there is one, else
-    /// the key window, else the first window of any connected scene.
-    static func appWindow() -> UIWindow? {
-        let windows = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
+    /// the key window, else the first window of any connected scene. With a
+    /// `scene`, only that scene's windows are considered. Windows that are
+    /// not the app's (keyboard, text effects, CrashCam's overlays) never
+    /// qualify.
+    static func appWindow(in scene: UIWindowScene? = nil) -> UIWindow? {
+        let scenes = scene.map { [$0] }
+            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let windows = scenes
             .flatMap(\.windows)
-            .filter { !isCrashCamOverlay($0) }
+            .filter { TouchRecorder.isRecordable($0) }
         return windows.first { $0.isKeyWindow && $0 is TrackingWindow }
             ?? windows.first(where: \.isKeyWindow)
             ?? windows.first { $0 is TrackingWindow }

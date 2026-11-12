@@ -58,6 +58,16 @@ public final class CrashCam {
         set { ScreenTracker.shared.isAutomatic = newValue }
     }
 
+    /// Automatic touch recording: `bootstrap()` hooks `UIApplication.sendEvent`
+    /// and records every touch in the app's own windows, so no window or
+    /// scene-delegate setup is needed (see `TouchRecorder`). On by default.
+    /// Set to false to record only through a `TrackingWindow` the app
+    /// installs itself. Can be changed at any time.
+    public var automaticTouchRecording: Bool {
+        get { TouchRecorder.isAutomatic }
+        set { TouchRecorder.isAutomatic = newValue }
+    }
+
     /// Debug builds only: a floating button that starts a replay by hand —
     /// the last crash, a recording copied into `Documents/CrashCam/replays/`
     /// (the dashboard's replay editor shows the `cp` command), or one picked
@@ -169,9 +179,11 @@ public final class CrashCam {
         let geometry = Self.screenGeometry()
         CrashCamLogger.shared.startNewSession(screenSize: geometry.size, scale: geometry.scale)
 
+        // Record every touch of the app's own windows from here on.
+        TouchRecorder.installApplicationHook()
+
         // Start recording text-field/-view edits (length only) into the same
-        // event stream. Touches are captured by TrackingWindow; this covers the
-        // keyboard side.
+        // event stream; this covers the keyboard side.
         TextInputTracker.shared.start()
 
         // Screen names on every row, screen-change rows as controllers appear.

@@ -2,26 +2,12 @@
 //  CrashCamSceneDelegate.swift
 //  CrashCam
 //
-//  Drop-in bridge for SwiftUI-lifecycle apps (no SceneDelegate of their own):
-//  touch recording needs `TrackingWindow` installed as the app's window, which
-//  UIKit-lifecycle apps do in their own SceneDelegate. SwiftUI apps instead
-//  declare an app-delegate adaptor subclassing `CrashCamAppDelegate`:
+//  Not needed since SDK 2.1.0: `CrashCam.bootstrap()` records touches through
+//  an application-level hook (see `TouchRecorder`), so a SwiftUI-lifecycle app
+//  only calls `bootstrap()` from its `App`'s `init()`. These classes are kept
+//  so apps integrated earlier keep compiling and working.
 //
-//      class AppDelegate: CrashCamAppDelegate {
-//          func application(_ application: UIApplication,
-//                           didFinishLaunchingWithOptions launchOptions:
-//                               [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-//              CrashCam.shared.bootstrap(uploadEndpoint: ..., uploadToken: ...)
-//              return true
-//          }
-//      }
-//
-//      @main struct MyApp: App {
-//          @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-//          var body: some Scene { WindowGroup { ContentView() } }
-//      }
-//
-//  The adaptor routes every window scene through `CrashCamSceneDelegate`,
+//  What they do: route every window scene through `CrashCamSceneDelegate`,
 //  which creates a `TrackingWindow` and leaves it for SwiftUI to populate
 //  with the `WindowGroup` content (SwiftUI adopts a window the scene
 //  delegate has already created instead of making its own).

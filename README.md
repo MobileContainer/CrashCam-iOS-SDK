@@ -34,7 +34,7 @@ The library product is `CrashCam-iOS`; the module you import is `CrashCam`.
 
 ## Integration
 
-### 1. Bootstrap (both lifecycles)
+### 1. Bootstrap
 
 The SDK knows where the CrashCam server is (`CrashCam.serverURL`); the only
 thing an app supplies is its **upload token**, shown on the dashboard's app
@@ -60,44 +60,30 @@ development against a local `crash-server`, add the launch argument
 `CrashCam.shared.developmentServerURL` before `bootstrap()`); nothing in the
 integration itself names a server.
 
-### 2. Install the tracking window
-
-**UIKit lifecycle** — create the window in your SceneDelegate:
-
-```swift
-func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
-           options connectionOptions: UIScene.ConnectionOptions) {
-    guard let windowScene = scene as? UIWindowScene else { return }
-    let window = TrackingWindow(windowScene: windowScene)
-    window.rootViewController = MyRootViewController()
-    self.window = window
-    window.makeKeyAndVisible()
-}
-```
-
-**SwiftUI lifecycle** — subclass the provided adaptor delegate:
+That one call is the whole code integration, in UIKit and SwiftUI apps
+alike. In a SwiftUI-lifecycle app call it from the `App`'s `init()`:
 
 ```swift
-class AppDelegate: CrashCamAppDelegate {
-    func application(_ application: UIApplication,
-                     didFinishLaunchingWithOptions launchOptions:
-                         [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        CrashCam.shared.bootstrap()
-        return true
-    }
-}
-
 @main
 struct MyApp: App {
-    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    init() { CrashCam.shared.bootstrap() }
     var body: some Scene { WindowGroup { ContentView() } }
 }
 ```
 
-Crash reporting and upload work without the tracking window; only touch
-recording needs it.
+**Touches are recorded automatically (2.1.0).** `bootstrap()` hooks
+`UIApplication.sendEvent` and records every touch in the app's own windows;
+there is no window or scene delegate to set up. Windows that are not the
+app's — the keyboard, text effects and other system windows — are never
+recorded, so key taps cannot reveal typed text.
 
-### 3. dSYM upload build phase (symbolicated reports)
+Apps integrated before 2.1.0 need no change: `TrackingWindow`,
+`CrashCamSceneDelegate` and `CrashCamAppDelegate` still exist and still work,
+and a touch is never recorded twice. To record only through a
+`TrackingWindow` you install yourself, set
+`CrashCam.shared.automaticTouchRecording = false`.
+
+### 2. dSYM upload build phase (symbolicated reports)
 
 Add a **Run Script** phase to your app target so every build with a dSYM
 uploads it to the server (reports are symbolicated server-side, matched by
@@ -138,7 +124,7 @@ Notes:
   File*), every Debug build uploads one too. Keep the phase to Release builds
   by making its first line `[ "$CONFIGURATION" = Release ] || exit 0`.
 
-### 4. Dashboard: register the app
+### 3. Dashboard: register the app
 
 Sign in to the dashboard, open your team and **＋ Add app** with the bundle id.
 The app's settings page shows its upload token and these snippets. Uploads

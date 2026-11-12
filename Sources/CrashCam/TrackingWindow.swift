@@ -7,61 +7,23 @@
 
 import UIKit
 
+/// The original way to record touches: install this as the app's window.
+///
+/// Since SDK 2.1.0 it is no longer needed — `CrashCam.bootstrap()` records
+/// every touch through an application-level hook (see `TouchRecorder`) — and
+/// apps that still use it keep working unchanged: while that hook is
+/// recording, this window records nothing itself, so no touch is written
+/// twice. It records on its own only when the hook is not in charge
+/// (`CrashCam.shared.automaticTouchRecording = false`, or `bootstrap()` has
+/// not run).
 public final class TrackingWindow: UIWindow {
 
     public override func sendEvent(_ event: UIEvent) {
-        // Record BEFORE forwarding. The crash this tool exists to capture is
-        // usually raised synchronously by a handler of this very event (a
-        // button action or gesture callback runs inside super.sendEvent), so
-        // recording after forwarding loses the final — fatal — touch. The
-        // in-process replayer still synthesizes a missing touch-up when
-        // replaying logs recorded before this fix.
-        if event.type == .touches,
-           let touches = event.allTouches {
-
-            let tracker = ScreenTracker.shared
-
-            for touch in touches where touch.phase == .began {
-                // A touch is the safety net for screen changes that happened
-                // without a viewDidAppear (or while automatic tracking was
-                // off): re-resolve the visible screen before attributing it.
-                tracker.noteScreen(in: self)
-                let location = touch.location(in: touch.window)
-                let element = ScreenTracker.element(for: touch.view)
-                let info = UserTapInfo(
-                    location: location,
-                    timestamp: Date(),
-                    phase: .began,
-                    screen: tracker.currentScreen,
-                    element: element.name,
-                    elementId: element.id
-                )
-                CrashCamLogger.shared.add(info)
-            }
-
-            for touch in touches where touch.phase == .moved {
-                let location = touch.location(in: touch.window)
-                let info = UserTapInfo(
-                    location: location,
-                    timestamp: Date(),
-                    phase: .moved,
-                    screen: tracker.currentScreen
-                )
-                CrashCamLogger.shared.add(info)
-            }
-
-            for touch in touches where touch.phase == .ended {
-                let location = touch.location(in: touch.window)
-                let info = UserTapInfo(
-                    location: location,
-                    timestamp: Date(),
-                    phase: .ended,
-                    screen: tracker.currentScreen
-                )
-                CrashCamLogger.shared.add(info)
-            }
+        // Record BEFORE forwarding: the crash-causing handler runs inside
+        // super.sendEvent, so recording afterwards loses the fatal touch.
+        if !TouchRecorder.applicationHookRecords {
+            TouchRecorder.record(event, only: self)
         }
-
         super.sendEvent(event)
     }
 }
