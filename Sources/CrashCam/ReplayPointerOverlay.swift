@@ -37,7 +37,8 @@ final class ReplayPointerOverlay {
     }
 
     private var window: ReplayPointerWindow?
-    private var disc: UIView?
+    /// One disc per finger currently down, keyed by the finger id.
+    private var discs: [Int: UIView] = [:]
 
     // MARK: - Lifecycle
 
@@ -81,8 +82,8 @@ final class ReplayPointerOverlay {
     }
 
     private func detachNow() {
-        disc?.removeFromSuperview()
-        disc = nil
+        discs.values.forEach { $0.removeFromSuperview() }
+        discs = [:]
         if let overlay = window {
             overlay.isHidden = true
             overlay.windowScene = nil
@@ -92,16 +93,16 @@ final class ReplayPointerOverlay {
 
     // MARK: - Touch mirroring (points in `source` window coordinates)
 
-    func touchBegan(at point: CGPoint, in source: UIWindow) {
+    func touchBegan(at point: CGPoint, in source: UIWindow, finger: Int = 0) {
         guard let overlay = window else { return }
-        disc?.removeFromSuperview()
+        discs[finger]?.removeFromSuperview()
 
         let view = Self.makeDisc()
         view.center = source.convert(point, to: overlay)
         view.transform = CGAffineTransform(scaleX: 0.6, y: 0.6)
         view.alpha = 0
         overlay.addSubview(view)
-        disc = view
+        discs[finger] = view
 
         UIView.animate(withDuration: Style.pressDuration) {
             view.transform = .identity
@@ -109,20 +110,19 @@ final class ReplayPointerOverlay {
         }
     }
 
-    func touchMoved(to point: CGPoint, in source: UIWindow) {
+    func touchMoved(to point: CGPoint, in source: UIWindow, finger: Int = 0) {
         guard let overlay = window else { return }
         let center = source.convert(point, to: overlay)
-        guard let disc else {
-            touchBegan(at: point, in: source) // a stroke we never saw start
+        guard let disc = discs[finger] else {
+            touchBegan(at: point, in: source, finger: finger) // a stroke we never saw start
             return
         }
         disc.center = center
         dropTrailDot(at: center, below: disc, in: overlay)
     }
 
-    func touchEnded(at point: CGPoint, in source: UIWindow) {
-        guard let overlay = window, let view = disc else { return }
-        disc = nil
+    func touchEnded(at point: CGPoint, in source: UIWindow, finger: Int = 0) {
+        guard let overlay = window, let view = discs.removeValue(forKey: finger) else { return }
         view.center = source.convert(point, to: overlay)
         UIView.animate(withDuration: Style.liftDuration, animations: {
             view.transform = CGAffineTransform(scaleX: 1.7, y: 1.7)
@@ -132,13 +132,15 @@ final class ReplayPointerOverlay {
         })
     }
 
+    /// Fades out every finger still down.
     func touchCancelled() {
-        guard let view = disc else { return }
-        disc = nil
+        let views = Array(discs.values)
+        discs = [:]
+        guard !views.isEmpty else { return }
         UIView.animate(withDuration: Style.liftDuration / 2, animations: {
-            view.alpha = 0
+            views.forEach { $0.alpha = 0 }
         }, completion: { _ in
-            view.removeFromSuperview()
+            views.forEach { $0.removeFromSuperview() }
         })
     }
 

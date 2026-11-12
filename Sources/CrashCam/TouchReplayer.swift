@@ -23,7 +23,8 @@ import CrashCamTouchSynthesis
 /// Replays recorded `UserTapInfo` touch events by synthesizing UITouches and
 /// sending them through the app's own event pipeline.
 ///
-/// Touches only for now: `textChange` / `keyboardHide` rows are skipped (the
+/// Multi-finger gestures (pinch, rotate, two-finger pan) replay as recorded
+/// when the rows carry a `touchId`. Touches only for now: `textChange` / `keyboardHide` rows are skipped (the
 /// keyboard lives in its own window, so typing was never recorded as touches;
 /// in-process text replay is a separate, future step).
 @MainActor
@@ -45,17 +46,28 @@ public final class TouchReplayer {
         let phase: UserTapInfo.Phase
         let point: CGPoint
         let offset: TimeInterval // seconds since the first recorded event
+        let finger: Int          // the row's touchId; 0 when it has none
+    }
+
+    /// A synthetic finger that is currently down.
+    private struct Finger {
+        let touch: UITouch
+        var point: CGPoint
     }
 
     private var events: [ScheduledEvent] = []
     private var cursor = 0
     private var startTime: CFTimeInterval = 0
     private var displayLink: CADisplayLink?
-    // The schema carries no finger id (recordings are single-finger), so at
-    // most one synthetic touch is alive at a time — the same stroke model the
-    // Appium replay scripts use.
-    private var activeTouch: UITouch?
-    private var lastPoint: CGPoint = .zero
+    // One synthetic touch per finger id (`touchId`, recorded since SDK 2.2.0),
+    // so a pinch replays as two fingers. Rows without an id — older iOS
+    // recordings — all share finger 0, which is the single-finger stroke
+    // model those recordings were always replayed with.
+    private var fingers: [Int: Finger] = [:]
+    // Rows the recorder wrote from one touch event are microseconds apart;
+    // rows this close together (in replay time) for different fingers are
+    // delivered as one event again, as UIKit delivered them originally.
+    private var batchWindow: TimeInterval = 0.004
     private var maxLateness: TimeInterval = 0
     // Launch alignment: when the recording has a session-start row and the
     // caller says when *this* process launched, event offsets are measured
@@ -102,7 +114,8 @@ public final class TouchReplayer {
             .map {
                 ScheduledEvent(phase: $0.phase,
                                point: $0.location,
-                               offset: $0.timestamp.timeIntervalSince(origin) / speed)
+                               offset: $0.timestamp.timeIntervalSince(origin) / speed,
+                               finger: $0.touchId ?? 0)
             }
             .sorted { $0.offset < $1.offset }
 
@@ -114,7 +127,8 @@ public final class TouchReplayer {
             pointer.attach(above: window)
         }
         cursor = 0
-        activeTouch = nil
+        fingers = [:]
+        batchWindow = 0.004 / max(speed, 0.01)
         maxLateness = 0
         firstFireTime = nil
         isReplaying = true
@@ -150,13 +164,14 @@ public final class TouchReplayer {
         displayLink = link
     }
 
-    /// Stops early; a finger still down is cancelled so UIKit state is clean.
+    /// Stops early; fingers still down are cancelled so UIKit state is clean.
     public func stop() {
-        if let touch = activeTouch {
+        if !fingers.isEmpty {
             pointer.touchCancelled()
-            touch.crs_setPhase(.cancelled)
-            CRSTouchSender.send([touch])
-            activeTouch = nil
+            let touches = orderedTouches()
+            touches.forEach { $0.crs_setPhase(.cancelled) }
+            CRSTouchSender.send(touches)
+            fingers = [:]
         }
         finish()
     }
@@ -177,69 +192,102 @@ public final class TouchReplayer {
     @objc private func tick(_ link: CADisplayLink) {
         let elapsed = CACurrentMediaTime() - startTime
 
-        // Fire everything due this frame, in recorded order.
+        // Fire everything due this frame, in recorded order. Rows of
+        // different fingers recorded at (practically) the same instant came
+        // from one touch event and go out as one event.
         while cursor < events.count, events[cursor].offset <= elapsed {
-            maxLateness = max(maxLateness, elapsed - events[cursor].offset)
-            if firstFireTime == nil { firstFireTime = CACurrentMediaTime() }
-            fire(events[cursor])
+            var batch = [events[cursor]]
             cursor += 1
+            while cursor < events.count,
+                  events[cursor].offset <= elapsed,
+                  events[cursor].offset - batch[0].offset < batchWindow,
+                  !batch.contains(where: { $0.finger == events[cursor].finger }) {
+                batch.append(events[cursor])
+                cursor += 1
+            }
+            maxLateness = max(maxLateness, elapsed - batch[0].offset)
+            if firstFireTime == nil { firstFireTime = CACurrentMediaTime() }
+            fire(batch)
         }
 
         if cursor >= events.count {
             // A recording can end mid-stroke: the crash typically happens
             // *inside* a handler of the final touch, killing the process
-            // before its up/ended was persisted. Close the stroke so that
-            // final gesture actually fires — the in-process equivalent of the
-            // synthesized pointerUp the Appium scripts append.
-            if let touch = activeTouch {
-                if let window {
-                    pointer.touchEnded(at: lastPoint, in: window)
+            // before its up/ended was persisted. Lift every finger still
+            // down so that final gesture actually fires.
+            if !fingers.isEmpty, let window {
+                for (id, finger) in fingers {
+                    pointer.touchEnded(at: finger.point, in: window, finger: id)
+                    finger.touch.crs_move(to: finger.point)
+                    finger.touch.crs_setPhase(.ended)
                 }
-                touch.crs_move(to: lastPoint)
-                touch.crs_setPhase(.ended)
-                CRSTouchSender.send([touch])
-                activeTouch = nil
+                CRSTouchSender.send(orderedTouches())
+                fingers = [:]
             }
             reportStats(elapsed: elapsed)
             finish()
         }
     }
 
-    private func fire(_ e: ScheduledEvent) {
+    /// The touches of every finger down, in a stable order.
+    private func orderedTouches() -> [UITouch] {
+        fingers.keys.sorted().compactMap { fingers[$0]?.touch }
+    }
+
+    /// Delivers one touch event: the fingers in `changed` carry their new
+    /// phase, every other finger still down is reported as stationary — the
+    /// shape of a real multi-finger event.
+    private func send(changed: Set<Int>) {
+        for (id, finger) in fingers where !changed.contains(id) {
+            finger.touch.crs_setPhase(.stationary)
+        }
+        CRSTouchSender.send(orderedTouches())
+    }
+
+    private func fire(_ batch: [ScheduledEvent]) {
         guard let window else { return }
-        let previousPoint = lastPoint
-        lastPoint = e.point
+        var changed = Set<Int>()
+        var lifted: [Int] = []
 
         // The pointer is updated before each injection: what the overlay
         // shows is the touch that is about to be delivered.
-        switch e.phase {
-        case .began:
-            // A began while a stroke is open means its ended was never
-            // recorded — close the old stroke before starting the new one.
-            if let touch = activeTouch {
-                pointer.touchEnded(at: previousPoint, in: window)
-                touch.crs_setPhase(.ended)
-                CRSTouchSender.send([touch])
+        for e in batch {
+            switch e.phase {
+            case .began:
+                // A began while this finger is still down means its ended was
+                // never recorded — lift it before putting it down again.
+                if let stale = fingers[e.finger] {
+                    pointer.touchEnded(at: stale.point, in: window, finger: e.finger)
+                    stale.touch.crs_setPhase(.ended)
+                    send(changed: [e.finger])
+                    fingers[e.finger] = nil
+                }
+                guard let touch = UITouch.crs_touchBeginning(at: e.point, window: window) else { continue }
+                fingers[e.finger] = Finger(touch: touch, point: e.point)
+                pointer.touchBegan(at: e.point, in: window, finger: e.finger)
+                changed.insert(e.finger)
+
+            case .moved:
+                guard let finger = fingers[e.finger] else { continue }
+                pointer.touchMoved(to: e.point, in: window, finger: e.finger)
+                finger.touch.crs_move(to: e.point)
+                fingers[e.finger]?.point = e.point
+                changed.insert(e.finger)
+
+            case .ended:
+                guard let finger = fingers[e.finger] else { continue }
+                pointer.touchEnded(at: e.point, in: window, finger: e.finger)
+                finger.touch.crs_move(to: e.point) // final position
+                finger.touch.crs_setPhase(.ended)
+                fingers[e.finger]?.point = e.point
+                changed.insert(e.finger)
+                lifted.append(e.finger)
             }
-            guard let touch = UITouch.crs_touchBeginning(at: e.point, window: window) else { return }
-            activeTouch = touch
-            pointer.touchBegan(at: e.point, in: window)
-            CRSTouchSender.send([touch])
-
-        case .moved:
-            guard let touch = activeTouch else { return }
-            pointer.touchMoved(to: e.point, in: window)
-            touch.crs_move(to: e.point)
-            CRSTouchSender.send([touch])
-
-        case .ended:
-            guard let touch = activeTouch else { return }
-            pointer.touchEnded(at: e.point, in: window)
-            touch.crs_move(to: e.point) // final position
-            touch.crs_setPhase(.ended)
-            CRSTouchSender.send([touch])
-            activeTouch = nil
         }
+
+        guard !changed.isEmpty else { return }
+        send(changed: changed)
+        lifted.forEach { fingers[$0] = nil }
     }
 
     // Recordings store raw window coordinates, so one captured on a different

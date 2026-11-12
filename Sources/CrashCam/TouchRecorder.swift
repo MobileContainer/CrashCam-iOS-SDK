@@ -65,6 +65,8 @@ enum TouchRecorder {
 
     /// Writes one row per began / moved / ended touch of `event`. `only`
     /// restricts it to the touches of one window (the `TrackingWindow` path).
+    /// A cancelled touch is written as ended (the format has no cancel
+    /// phase), so no finger is left down in the recording.
     static func record(_ event: UIEvent, only: UIWindow? = nil) {
         guard event.type == .touches, let touches = event.allTouches, !touches.isEmpty else { return }
         let tracker = ScreenTracker.shared
@@ -83,22 +85,56 @@ enum TouchRecorder {
                 phase: .began,
                 screen: tracker.currentScreen,
                 element: element.name,
-                elementId: element.id
+                elementId: element.id,
+                touchId: assignFinger(to: touch, among: touches)
             ))
         }
 
-        for phase in [UITouch.Phase.moved, .ended] {
-            for touch in touches where touch.phase == phase {
-                guard let window = recordableWindow(of: touch, only: only) else { continue }
-                let home = ScreenTracker.appWindow(in: window.windowScene) ?? window
-                CrashCamLogger.shared.add(UserTapInfo(
-                    location: location(of: touch, in: window, home: home),
-                    timestamp: Date(),
-                    phase: phase == .moved ? .moved : .ended,
-                    screen: tracker.currentScreen
-                ))
-            }
+        for touch in touches where touch.phase == .moved {
+            guard let window = recordableWindow(of: touch, only: only),
+                  let finger = fingers[ObjectIdentifier(touch)]
+            else { continue }
+            let home = ScreenTracker.appWindow(in: window.windowScene) ?? window
+            CrashCamLogger.shared.add(UserTapInfo(
+                location: location(of: touch, in: window, home: home),
+                timestamp: Date(),
+                phase: .moved,
+                screen: tracker.currentScreen,
+                touchId: finger
+            ))
         }
+
+        for touch in touches where touch.phase == .ended || touch.phase == .cancelled {
+            guard let window = recordableWindow(of: touch, only: only),
+                  let finger = fingers.removeValue(forKey: ObjectIdentifier(touch))
+            else { continue }
+            let home = ScreenTracker.appWindow(in: window.windowScene) ?? window
+            CrashCamLogger.shared.add(UserTapInfo(
+                location: location(of: touch, in: window, home: home),
+                timestamp: Date(),
+                phase: .ended,
+                screen: tracker.currentScreen,
+                touchId: finger
+            ))
+        }
+    }
+
+    // MARK: - Finger ids
+
+    /// The finger id of every touch currently down, keyed by the `UITouch`
+    /// object (UIKit keeps one object per finger from down to up).
+    private static var fingers: [ObjectIdentifier: Int] = [:]
+
+    /// Gives a new touch the lowest id not in use. Ids of touches that are no
+    /// longer part of the event (their end was never seen) are released first.
+    private static func assignFinger(to touch: UITouch, among touches: Set<UITouch>) -> Int {
+        let live = Set(touches.map { ObjectIdentifier($0) })
+        fingers = fingers.filter { live.contains($0.key) }
+        var id = 0
+        let used = Set(fingers.values)
+        while used.contains(id) { id += 1 }
+        fingers[ObjectIdentifier(touch)] = id
+        return id
     }
 
     private static func recordableWindow(of touch: UITouch, only: UIWindow?) -> UIWindow? {

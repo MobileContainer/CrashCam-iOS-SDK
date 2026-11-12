@@ -63,6 +63,13 @@ public struct UserTapInfo: Codable {
     /// when the app set one. Identifiers are developer-assigned constants, so
     /// they are safe to record; accessibility *labels* are not recorded.
     public let elementId: String?
+    /// Which finger a touch row belongs to (touch rows only, since SDK 2.2.0):
+    /// a small number, unique among the fingers down at the same time and
+    /// reused after a finger lifts — the same field the Android SDK writes.
+    /// It is what lets a pinch or any other multi-finger gesture be replayed
+    /// and drawn as separate fingers. `nil` in older recordings, which are
+    /// read as one finger.
+    public let touchId: Int?
     /// Window size in points, on session-start and screen-change rows.
     public let screenSize: CGSize?
     /// Screen scale (points → pixels), on session-start and screen-change rows.
@@ -75,7 +82,8 @@ public struct UserTapInfo: Codable {
         phase: Phase,
         screen: String? = nil,
         element: String? = nil,
-        elementId: String? = nil
+        elementId: String? = nil,
+        touchId: Int? = nil
     ) {
         self.kind = .touch
         self.location = location
@@ -85,6 +93,7 @@ public struct UserTapInfo: Codable {
         self.screen = screen
         self.element = element
         self.elementId = elementId
+        self.touchId = touchId
         self.screenSize = nil
         self.scale = nil
     }
@@ -106,6 +115,7 @@ public struct UserTapInfo: Codable {
         self.screen = screen
         self.element = nil
         self.elementId = nil
+        self.touchId = nil
         self.screenSize = nil
         self.scale = nil
     }
@@ -121,6 +131,7 @@ public struct UserTapInfo: Codable {
         self.screen = screen
         self.element = nil
         self.elementId = nil
+        self.touchId = nil
         self.screenSize = nil
         self.scale = nil
     }
@@ -139,6 +150,7 @@ public struct UserTapInfo: Codable {
         self.screen = nil
         self.element = nil
         self.elementId = nil
+        self.touchId = nil
         self.screenSize = screenSize
         self.scale = scale
     }
@@ -155,13 +167,14 @@ public struct UserTapInfo: Codable {
         self.screen = screen
         self.element = nil
         self.elementId = nil
+        self.touchId = nil
         self.screenSize = screenSize
         self.scale = scale
     }
 
     enum CodingKeys: String, CodingKey {
         case kind, location, timestamp, phase, textLength
-        case screen, element, elementId, screenSize, scale
+        case screen, element, elementId, touchId, screenSize, scale
     }
 
     // Backward-compatible decoding: logs recorded before text tracking carry no
@@ -178,6 +191,7 @@ public struct UserTapInfo: Codable {
         self.screen = try c.decodeIfPresent(String.self, forKey: .screen)
         self.element = try c.decodeIfPresent(String.self, forKey: .element)
         self.elementId = try c.decodeIfPresent(String.self, forKey: .elementId)
+        self.touchId = try c.decodeIfPresent(Int.self, forKey: .touchId)
         self.screenSize = try c.decodeIfPresent(CGSize.self, forKey: .screenSize)
         self.scale = try c.decodeIfPresent(CGFloat.self, forKey: .scale)
     }
@@ -194,6 +208,7 @@ public struct UserTapInfo: Codable {
         try c.encodeIfPresent(screen, forKey: .screen)
         try c.encodeIfPresent(element, forKey: .element)
         try c.encodeIfPresent(elementId, forKey: .elementId)
+        try c.encodeIfPresent(touchId, forKey: .touchId)
         try c.encodeIfPresent(screenSize, forKey: .screenSize)
         try c.encodeIfPresent(scale, forKey: .scale)
     }

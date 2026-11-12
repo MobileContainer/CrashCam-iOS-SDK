@@ -175,6 +175,10 @@ recordings without them still decode and replay.
 
 - `CrashCam.shared.replayLastSession()` replays the previous crashed session's
   touches in-process.
+- Multi-finger gestures — pinch to zoom, rotate, two-finger pan — are
+  recorded per finger (`touchId` on each touch row, since 2.2.0) and replayed
+  as separate fingers. Recordings made by earlier versions carry no finger
+  id and replay as one finger.
 - Launch arguments: `-CrashCamReplayOnLaunch` replays the app's own last
   recording; `-CrashCamReplayFile <absolute path>` replays a chosen recording
   (Simulator: host paths work directly).
