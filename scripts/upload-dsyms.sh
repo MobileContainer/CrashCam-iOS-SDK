@@ -40,26 +40,46 @@
 # The target is the CrashCam server (CRASHCAM_DEFAULT_SERVER below — the same
 # constant the SDK carries); CRASHCAM_SERVER_URL overrides it and may hold
 # SEVERAL space-separated URLs, each of which gets every dSYM (development:
-# add a local crash-server). The app's upload token is read from the built
-# Info.plist (`CrashCamToken`, the key the SDK reads too), or from
-# CRASHCAM_UPLOAD_TOKEN when exported; it is sent as X-CrashCam-Token.
+# add a local crash-server).
+#
+# Credential: the app's BUILD KEY (app settings page on the dashboard), sent as
+# X-CrashCam-Build-Key. It is a different secret from the upload token in
+# Info.plist on purpose: that token ships inside the app, so anyone can read
+# it, and whoever can upload symbols decides what a build's crashes read as.
+# The build key must therefore stay out of the app and out of Info.plist. It
+# is looked up, in order:
+#   1. CRASHCAM_BUILD_KEY — an environment variable or an Xcode build setting
+#      (e.g. in an .xcconfig that is not committed, or a CI secret);
+#   2. the file named by CRASHCAM_BUILD_KEY_FILE;
+#   3. .crashcam-build-key next to the project (SRCROOT) — add it to .gitignore;
+#   4. ~/.crashcam/build-keys/<bundle id> — per machine, nothing in the repo.
+# Without a key nothing is uploaded and the build carries on.
+# (A server from before build keys existed took the upload token here; export
+# CRASHCAM_UPLOAD_TOKEN to send that instead.)
 
 set -u
 
 CRASHCAM_DEFAULT_SERVER="https://crashcam.obilet.com"
 SERVER_URLS="${CRASHCAM_SERVER_URL:-$CRASHCAM_DEFAULT_SERVER}"
 
-# Token: the environment wins, else the key in the app's built Info.plist.
-UPLOAD_TOKEN="${CRASHCAM_UPLOAD_TOKEN:-}"
-if [ -z "$UPLOAD_TOKEN" ] && [ -n "${TARGET_BUILD_DIR:-}" ] && [ -n "${INFOPLIST_PATH:-}" ] \
-   && [ -f "$TARGET_BUILD_DIR/$INFOPLIST_PATH" ]; then
-    UPLOAD_TOKEN="$(/usr/libexec/PlistBuddy -c 'Print :CrashCamToken' "$TARGET_BUILD_DIR/$INFOPLIST_PATH" 2>/dev/null || true)"
-fi
+# The build key: environment / build setting, then the files (first line,
+# surrounding whitespace dropped).
+read_key_file() { [ -f "$1" ] && /usr/bin/head -n 1 "$1" 2>/dev/null | /usr/bin/tr -d '[:space:]'; }
+BUILD_KEY="${CRASHCAM_BUILD_KEY:-}"
+[ -z "$BUILD_KEY" ] && [ -n "${CRASHCAM_BUILD_KEY_FILE:-}" ] && BUILD_KEY="$(read_key_file "$CRASHCAM_BUILD_KEY_FILE")"
+[ -z "$BUILD_KEY" ] && [ -n "${SRCROOT:-}" ] && BUILD_KEY="$(read_key_file "$SRCROOT/.crashcam-build-key")"
+[ -z "$BUILD_KEY" ] && [ -n "${PRODUCT_BUNDLE_IDENTIFIER:-}" ] \
+    && BUILD_KEY="$(read_key_file "$HOME/.crashcam/build-keys/$PRODUCT_BUNDLE_IDENTIFIER")"
+
 TOKEN_HEADER=()
-if [ -n "$UPLOAD_TOKEN" ]; then
-    TOKEN_HEADER=(-H "X-CrashCam-Token: ${UPLOAD_TOKEN}")
+if [ -n "$BUILD_KEY" ]; then
+    TOKEN_HEADER=(-H "X-CrashCam-Build-Key: ${BUILD_KEY}")
+elif [ -n "${CRASHCAM_UPLOAD_TOKEN:-}" ]; then
+    # Only for a server older than build keys.
+    TOKEN_HEADER=(-H "X-CrashCam-Token: ${CRASHCAM_UPLOAD_TOKEN}")
 else
-    echo "CrashCam: no upload token (CrashCamToken in Info.plist or CRASHCAM_UPLOAD_TOKEN) — the server will reject the dSYM upload."
+    echo "CrashCam: dSYMs not uploaded — no build key. Copy it from the app's settings page on the dashboard and put it in ~/.crashcam/build-keys/${PRODUCT_BUNDLE_IDENTIFIER:-<bundle id>} (or .crashcam-build-key next to the project, or the CRASHCAM_BUILD_KEY build setting). Never in Info.plist: that file ships inside the app."
+    exit 0
 fi
 
 if [ -z "${DWARF_DSYM_FOLDER_PATH:-}" ] || [ ! -d "$DWARF_DSYM_FOLDER_PATH" ]; then
@@ -250,6 +270,13 @@ upload_slice() { # $1 = dSYM bundle path, $2 = binary name, $3 = arch, $4 = slic
         if [ $? -eq 0 ] && [[ "$response" == *'"uuids"'* ]]; then
             echo "CrashCam: dSYM upload response: $response"
             mark_uploaded "$slice" "$SERVER_URL"
+        elif [[ "$response" == *"<html"* || "$response" == *"<!DOCTYPE"* ]]; then
+            # An HTML page is never the server's own answer (it speaks JSON):
+            # something in front of it — a CDN, WAF or proxy — stopped the upload.
+            ray=$(printf '%s' "$response" | /usr/bin/sed -n 's/.*Ray ID: *<[^>]*>\([0-9a-f]\{8,\}\)<.*/\1/p' | /usr/bin/head -1)
+            echo "warning: CrashCam dSYM upload was blocked before it reached $SERVER_URL (a CDN/WAF answered with an HTML page${ray:+, Cloudflare Ray ID $ray}). If the server is only reachable from a private network, connect to the VPN and build again."
+        elif [[ "$response" == *"build key"* ]]; then
+            echo "warning: CrashCam dSYM upload refused by $SERVER_URL — the build key is missing, wrong or was rotated. Copy the current one from the app's settings page: $response"
         else
             echo "warning: CrashCam dSYM upload failed (is crash-server running at $SERVER_URL?): $response"
         fi

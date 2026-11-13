@@ -87,12 +87,29 @@ and a touch is never recorded twice. To record only through a
 
 Add a **Run Script** phase to your app target so every build with a dSYM
 uploads it to the server (reports are symbolicated server-side, matched by
-binary UUID). The script reads the token from the built `Info.plist`
-(`CrashCamToken`) and targets the CrashCam server, so the phase is one line:
+binary UUID). The script targets the CrashCam server, so the phase is one
+line:
 
 ```sh
 "${BUILD_DIR%/Build/*}/SourcePackages/checkouts/CrashCam-iOS-SDK/scripts/upload-dsyms.sh"
 ```
+
+**The build key.** dSYM uploads are authorised by the app's *build key*
+(dashboard → app settings → Build key), not by the upload token: that token
+ships inside the app, where anyone can read it, and whoever can upload
+symbols decides what a build's crashes read as. Keep the build key out of the
+app and out of `Info.plist`. On each Mac that builds the app, run the command
+the settings page shows, which stores it per machine:
+
+```sh
+mkdir -p ~/.crashcam/build-keys && printf '%s' '<build key>' > ~/.crashcam/build-keys/<bundle id>
+```
+
+The script looks for it in `CRASHCAM_BUILD_KEY` (environment variable or
+build setting — the CI secret), the file named by `CRASHCAM_BUILD_KEY_FILE`,
+`.crashcam-build-key` next to the project (git-ignore it), then
+`~/.crashcam/build-keys/<bundle id>`. Without a key the build succeeds and
+uploads nothing; a dSYM can also be uploaded by hand on the dashboard.
 
 Notes:
 
@@ -101,8 +118,7 @@ Notes:
   Crashlytics requires).
 - With stock settings only Release builds produce a dSYM; enable
   *DWARF with dSYM File* for Debug to opt Debug builds in.
-- `CRASHCAM_UPLOAD_TOKEN` overrides the Info.plist token; `CRASHCAM_SERVER_URL`
-  (development) overrides the server and accepts several space-separated
+- `CRASHCAM_SERVER_URL` (development) overrides the server and accepts several space-separated
   URLs, each of which gets every dSYM. The script never fails the build — an
   unreachable server only logs.
 - Each DWARF is sent one architecture slice at a time, with the sections
@@ -127,7 +143,7 @@ Notes:
 ### 3. Dashboard: register the app
 
 Sign in to the dashboard, open your team and **＋ Add app** with the bundle id.
-The app's settings page shows its upload token and these snippets. Uploads
+The app's settings page shows its upload token, its build key and these snippets. Uploads
 carrying the token are attributed to that app (the token's identity overrides
 whatever the client claims); team members see its crashes, replays and
 heatmaps, and an owner can rotate the token or hand the app to another team.
